@@ -1,0 +1,54 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode user-specific state
+xcuserdata/
+*.xcuserstate
+*.xccheckout
+*.xcscmblueprint
+
+# Xcode and Swift build products
+DerivedData/
+build/
+.build/
+*.app
+*.dSYM
+*.dSYM.zip
+*.xcarchive
+
+# Test and profiling artifacts
+*.xcresult
+*.trace
+*.profdata
+*.gcda
+*.gcno
+
+# Swift Package Manager local state
+.swiftpm/xcode/package.xcworkspace/xcuserdata/
+.swiftpm/configuration/registries.json
+.swiftpm/security/
+
+# Playgrounds
+timeline.xctimeline
+playground.xcworkspace
+
+# Editors and temporary files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Local environment and signing credentials
+.env
+.env.*
+!.env.example
+*.p12
+*.cer
+*.provisionprofile
+
+# Local logs and crash reports
+*.log
+*.crash

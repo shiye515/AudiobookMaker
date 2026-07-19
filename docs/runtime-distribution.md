@@ -1,30 +1,18 @@
-# 语音运行时分发与许可记录
+# Runtime and model distribution
 
-## 当前可交付运行时
+AudiobookMaker ships `sherpa-onnx 1.13.2` and `ONNX Runtime 1.24.4` as signed universal dynamic XCFrameworks. Both binaries contain `x86_64` and `arm64` slices. The versions, release artifact hash and source commit are pinned in `Vendor/SherpaOnnx.version.json`; `Tools/Dependencies/fetch-sherpa-onnx.sh` reproduces the vendor artifacts.
 
-AudiobookMaker 主 App target 仅链接 Apple SDK，工程没有 Swift Package 或第三方二进制依赖。当前生产路径使用 `AVSpeechSynthesizer` 生成本机语音，使用 AVFoundation 封装 M4B；App Sandbox 仅授权用户选择的文件读写，没有网络客户端权限。
+Kokoro model weights are never included in the application bundle. After installation, the Models screen can download `kokoro-int8-multi-lang-v1_1.tar.bz2` from the signed built-in manifest. The installer:
 
-这使当前 Intel Mac 可以直接完成 EPUB 导入、语音生成、M4B 封装和 ZIP 导出。语音质量及可用音色取决于用户在 macOS 中安装的系统语音。
+1. accepts only HTTPS GitHub release hosts and approved redirect hosts;
+2. supports progress, cancellation, retry and URLSession resume data;
+3. enforces the expected compressed size and SHA-256;
+4. rejects absolute paths, traversal, links and unexpected executables before extraction;
+5. validates the model, voice, token, lexicon, language-data and license files;
+6. atomically moves a complete version from staging into Application Support.
 
-## CosyVoice / MLX 边界
+The runtime loads only the verified version directory below `Application Support/AudiobookMaker/Runtime/Models`. Book text and generated audio are never attached to download requests. Removing network access after installation does not affect model loading, preview or conversion.
 
-参考项目 `/Users/shiye/work/RealReader` 的 CosyVoice 实现依赖 MLX Swift 和 Hugging Face Transformers。MLX 仅适用于 Apple Silicon，因此不能作为当前 Intel 测试机上的可运行后端，也不会静态链接进主 App target。
+Release verification must run `lipo -archs` for both embedded libraries, build both `ARCHS=x86_64` and `ARCHS=arm64`, inspect the app bundle for model weights, then perform signing, notarization and sandbox launch checks.
 
-后续 Apple Silicon 发行版应把推理实现放入单独、签名一致的 XPC Service，并只通过版本化 `TTSRuntimeClient` DTO 交换请求和 App 容器内临时音频文件。主 App 的导入、队列、checkpoint、M4B 和导出逻辑不依赖具体推理框架。
-
-发布 CosyVoice 运行时前仍需完成：
-
-- 固定并审计 MLX Swift、Transformers 与模型权重版本；
-- 核对每个依赖和模型权重的再分发许可、署名与隐私声明；
-- 配置 XPC Service 的 bundle ID、沙箱、签名、hardened runtime 和公证；
-- 在 Apple Silicon 真机完成模型加载、内存峰值、取消、超时、连接失效与离线测试；
-- 明确模型是随 App 分发还是由用户手动安装；当前 App 不包含下载器，也没有网络权限。
-
-## 审计命令
-
-```sh
-rg "XCRemoteSwiftPackageReference|packageProductDependencies" AudiobookMaker.xcodeproj/project.pbxproj
-plutil -p AudiobookMaker/AudiobookMaker.entitlements
-```
-
-截至 2026-07-18，三个 target 的 `packageProductDependencies` 均为空，主 App entitlements 只有 App Sandbox 和用户选择文件读写。
+Run `Tools/Smoke/run-kokoro-host-acceptance.sh MODEL_ARCHIVE [OUTPUT_DIRECTORY]` natively on each supported architecture to record cold load, latency, RTF, memory, cancellation and the real Swift runtime smoke result. Apple Silicon evidence and the human listening gate are defined in `docs/kokoro-release-gates.md`; compiling an arm64 slice on Intel is not accepted as proof of arm64 execution.

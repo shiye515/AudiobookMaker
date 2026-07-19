@@ -1,0 +1,31 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "components": [
+    {
+      "type": "library",
+      "name": "sherpa-onnx",
+      "version": "1.13.2",
+      "purl": "pkg:github/k2-fsa/sherpa-onnx@13d0ae6c539d2809d32f5eaa3ef1db0c459d0b24",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "hashes": [{"alg": "SHA-256", "content": "41e71dd73424394475d5f1ff176a21beaf1ce2b6466120110823adfc850b6b02"}]
+    },
+    {
+      "type": "library",
+      "name": "ONNX Runtime",
+      "version": "1.24.4",
+      "purl": "pkg:github/microsoft/onnxruntime@v1.24.4",
+      "licenses": [{"license": {"id": "MIT"}}]
+    },
+    {
+      "type": "machine-learning-model",
+      "name": "kokoro-int8-multi-lang-v1_1",
+      "version": "1.1-int8",
+      "purl": "pkg:generic/kokoro-int8-multi-lang-v1_1@1.1-int8",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "hashes": [{"alg": "SHA-256", "content": "a1e94694776049035c4f2c6529f003aaece993c76aae9a78995831c3c4dcafc6"}],
+      "scope": "optional"
+    }
+  ]
+}

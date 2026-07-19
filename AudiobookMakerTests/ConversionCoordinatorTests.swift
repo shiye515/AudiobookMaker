@@ -62,23 +62,17 @@ struct ConversionCoordinatorTests {
         ).filter { $0.pathExtension == "m4b" }
         #expect(artifacts.count == 2)
 
-        let exportURL = root.appending(path: "转换测试书.zip")
+        let exportURL = root.appending(path: "转换测试书.m4b")
         _ = try await ExportCoordinator(
             repository: dependencies.repository,
             directories: dependencies.directories
         ).export(bookID: bookID, to: exportURL)
-        let archive = try ZipContainerReader(url: exportURL)
-        #expect(archive.paths.contains("metadata.json"))
-        #expect(archive.paths.contains("README.txt"))
-        #expect(archive.paths.count { $0.hasSuffix(".m4b") } == 2)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let metadata = try decoder.decode(
-            ExportMetadata.self,
-            from: archive.data(for: "metadata.json")
+        try await M4BValidator.validateAudiobook(
+            url: exportURL,
+            expectedTitle: "转换测试书",
+            expectedChapterTitles: ["第 1 章", "第 2 章"],
+            expectsArtwork: false
         )
-        #expect(metadata.book.title == "转换测试书")
-        #expect(metadata.chapters.count == 2)
     }
 
     @Test @MainActor func twoBooksRunInPersistentFIFOOrder() async throws {
@@ -161,6 +155,8 @@ struct ConversionCoordinatorTests {
             try await Task.sleep(for: .milliseconds(30))
         }
         #expect(await permanentRuntime.synthesizedTexts().count == 1)
+        #expect(try await dependencies.repository.books()
+            .first(where: { $0.id == permanentID })?.status == .paused)
     }
 
     @Test @MainActor func nonImmediateRuntimePausesAfterCurrentFragmentAndResumesCheckpoint() async throws {
@@ -184,7 +180,11 @@ struct ConversionCoordinatorTests {
         )
 
         await coordinator.start(bookID: bookID)
-        try await Task.sleep(for: .milliseconds(40))
+        let synthesisDeadline = ContinuousClock.now + .seconds(5)
+        while await runtime.progressEvents().isEmpty, ContinuousClock.now < synthesisDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(await runtime.progressEvents().isEmpty == false)
         await coordinator.pause(bookID: bookID)
         while await coordinator.isActive(bookID: bookID) {
             try await Task.sleep(for: .milliseconds(20))
@@ -195,12 +195,14 @@ struct ConversionCoordinatorTests {
         #expect(pausedBook.jobTotalUnits == 12)
         #expect(await runtime.synthesizedTexts() == ["AAAA"])
 
-        await coordinator.start(bookID: bookID)
+        let resumable = try await dependencies.repository.resumableConversion(bookID: bookID)
+        await coordinator.resume(bookID: bookID)
         while await coordinator.isActive(bookID: bookID) {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(try await dependencies.repository.books().first?.status == .completed)
         #expect(await runtime.synthesizedTexts() == ["AAAA", "BBBB", "CCCC"])
+        #expect(resumable.selection.modelID == TTSModelCatalog.systemID)
     }
 
     @Test @MainActor func userAndRuntimeConcurrencyLimitsAreBothEnforced() async throws {
@@ -287,10 +289,20 @@ struct ConversionCoordinatorTests {
         #expect(paused.jobCompletedUnits == 0)
         #expect(await runtime.synthesizedTexts().isEmpty)
 
-        await coordinator.start(bookID: bookID)
+        let resumable = try await dependencies.repository.resumableConversion(bookID: bookID)
+        let chapterID = try #require(paused.chapters.first?.id)
+        let invalidCheckpoint = dependencies.directories.bookDirectory(id: bookID)
+            .appending(path: "audio/\(chapterID.uuidString)/\(resumable.id.uuidString)/0000.caf")
+        try FileManager.default.createDirectory(
+            at: invalidCheckpoint.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("truncated checkpoint".utf8).write(to: invalidCheckpoint)
+        await coordinator.resume(bookID: bookID)
         try await waitUntilIdle(coordinator, bookIDs: [bookID])
         #expect(try await dependencies.repository.books().first?.status == .completed)
         #expect(await runtime.synthesizedTexts() == ["AAAA", "BBBB"])
+        #expect(resumable.selection.modelID == TTSModelCatalog.systemID)
     }
 
     @Test @MainActor func progressUsesCompletedCharacterWeightNotChapterCount() async throws {
@@ -312,16 +324,22 @@ struct ConversionCoordinatorTests {
         )
 
         await coordinator.start(bookID: bookID)
+        let deadline = ContinuousClock.now + .seconds(10)
         while true {
             let snapshot = try #require(
                 try await dependencies.repository.books().first(where: { $0.id == bookID })
             )
-            if snapshot.jobCompletedUnits == 1 {
+            if let completed = snapshot.jobCompletedUnits, completed > 0 {
+                #expect(completed == 1)
                 #expect(snapshot.jobTotalUnits == 10)
-                #expect(Double(snapshot.jobCompletedUnits ?? 0) / Double(snapshot.jobTotalUnits ?? 1) == 0.1)
+                #expect(Double(completed) / Double(snapshot.jobTotalUnits ?? 1) == 0.1)
                 break
             }
-            try await Task.sleep(for: .milliseconds(10))
+            guard ContinuousClock.now < deadline else {
+                Issue.record("转换进度在 10 秒内没有产生首章 checkpoint，当前状态：\(snapshot.status)")
+                break
+            }
+            try await Task.sleep(for: .milliseconds(5))
         }
         try await waitUntilIdle(coordinator, bookIDs: [bookID])
     }

@@ -14,6 +14,7 @@ struct EPUBParserTests {
         #expect(parsed.title == "测试图书")
         #expect(parsed.author == "测试作者")
         #expect(parsed.language == "zh-CN")
+        #expect(Calendar(identifier: .gregorian).component(.year, from: parsed.publicationDate!) == 2024)
         #expect(parsed.chapters.map(\.title) == ["第一章 开始", "第二章 继续"])
         #expect(parsed.chapters.map(\.plainText) == ["这是第一段。", "这是第二段。"])
     }
@@ -240,7 +241,7 @@ struct EPUBParserTests {
         <?xml version="1.0" encoding="UTF-8"?>
         <package xmlns="http://www.idpf.org/2007/opf" version="\(version).0">
           <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-            <dc:title>测试图书</dc:title><dc:creator>测试作者</dc:creator><dc:language>zh-CN</dc:language>
+            <dc:title>测试图书</dc:title><dc:creator>测试作者</dc:creator><dc:language>zh-CN</dc:language><dc:date>2024-05-20</dc:date>
           </metadata>
           <manifest>
             \(navigationManifest)

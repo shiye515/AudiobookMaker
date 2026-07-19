@@ -13,7 +13,7 @@ AudiobookMaker 采用纯原生 macOS 架构：SwiftUI 负责界面，SwiftData �
 
 应用主体不引入 Electron、WebView、跨平台 UI、第三方数据库、第三方网络层或第三方设计系统。AppKit 仅用于 SwiftUI 尚未覆盖的原生 macOS 能力，仍属于 Apple 技术栈。
 
-CosyVoice3 本身是 PyTorch 模型，并不是 Apple 原生推理技术。根据需求 §6，本设计不实现模型运行时，只定义 App 侧协议边界：
+Kokoro 通过随 App 分发的双架构 sherpa-onnx 与 ONNX Runtime 执行。模型权重不编译进 App，而是在用户明确操作后下载到 Application Support：
 
 - App 内所有业务与 UI 保持 Apple 原生实现。
 - App 只依赖 `TTSRuntimeClient` 抽象，不直接依赖 Python、PyTorch 或具体模型框架。
@@ -30,7 +30,7 @@ CosyVoice3 本身是 PyTorch 模型，并不是 Apple 原生推理技术。根�
 | 断点恢复 | 完成章节不重做；异常退出时正在转换的章节回到“待继续”，由用户显式继续，避免重启后突然占用算力 |
 | 音频格式 | AAC-LC 音频写入 MPEG-4 容器，文件扩展名为 `.m4b` |
 | 每章产物 | 一个 M4B；包含 t=0 章节项、封面、书籍/作者元数据和覆盖整章时长的单条文本轨样本 |
-| 导出格式 | ZIP；包含按序号命名的 M4B、`metadata.json`、`README.txt` 和封面 |
+| 导出格式 | 单个 `.m4b`；合并全书音频时间轴，并内嵌章节导航、封面和书籍元数据 |
 | 设置入口 | 使用标准 macOS `Settings` Scene 和 `⌘,`，不在工具栏放齿轮按钮 |
 
 ---
@@ -43,12 +43,12 @@ CosyVoice3 本身是 PyTorch 模型，并不是 Apple 原生推理技术。根�
 2. 转换是可观察、可暂停、可恢复的长任务，任何耗时操作都不阻塞主线程。
 3. 任务与产物在 App 重启后可恢复，已完成章节不会重复生成。
 4. UI 在大窗口、窄窗口、全屏、深浅色模式和辅助功能环境中均保持原生 macOS 行为。
-5. TTS 框架通过统一协议接入，App 业务层不感知 CosyVoice、Bark 等实现差异。
+5. Apple 系统语音与 Kokoro 通过统一协议接入，App 业务层不感知底层框架差异。
 6. 文件结构和媒体产物可验证、可重建、可定位，不把大段文本和音频二进制直接塞进数据库。
 
 ### 2.2 非目标
 
-- 不设计 CosyVoice/PyTorch 的安装、模型下载、GPU 调度和推理进程内部结构。
+- 不允许把 Kokoro 权重、`voices.bin` 或模型词典编译进 App bundle；模型安装必须校验签名清单、大小、SHA-256、路径和必需文件。
 - 不处理 EPUB 的复杂排版、表格、脚注、图片朗读、DRM 或损坏文件修复。
 - 不实现逐句时间戳、逐字高亮、复杂音色/语速/语调编辑。
 - 不提供云同步、账号系统或云端推理。
@@ -198,9 +198,9 @@ AudiobookMaker/
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| id | String，unique | 如 `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` |
+| id | String，unique | 如 `sherpa-onnx/kokoro-multi-lang-v1_1-int8` |
 | displayName | String | 本地化展示名 |
-| frameworkRaw | String | cosyVoice / bark / fishSpeech / gptSoVits / unknown |
+| frameworkRaw | String | avFoundation / sherpaOnnx / unknown |
 | source | String? | 仓库或本地来源，仅展示 |
 | isDefault | Bool | 全局只能有一个 |
 | installationRaw | String | unavailable / installed / invalid |
@@ -383,7 +383,7 @@ protocol TTSRuntimeClient: Sendable {
 
 App 不根据框架写分支逻辑。运行时通过 `RuntimeCapabilities` 声明：支持语言、最大文本长度、输出格式、可取消性、参数集合和建议并发。`ConversionCoordinator` 只依据能力切片与调度。
 
-首次内置模型目录包含 CosyVoice3 0.5B 的描述记录，但只有运行时确认已安装且可加载后才显示“可用”。“设为默认”只改变后续新任务；运行中的任务继续使用创建时锁定的模型。
+首次内置模型目录包含 Apple 系统语音和 Kokoro 描述记录，但不包含 Kokoro 权重。Kokoro 只有在下载、校验、安全展开并由运行时探测成功后才显示“可用”。“设为默认”和音色切换只改变后续新任务；运行中的任务继续使用创建时锁定的 model ID、version 与 voice ID。
 
 ---
 
@@ -480,23 +480,21 @@ AVFoundation 能创建和关联媒体轨，但不同播放器对 MPEG-4 文本�
 
 ---
 
-## 11. ZIP 导出设计
+## 11. 单文件 M4B 导出设计
 
-用户对已完成书籍执行“导出有声书…”，使用 `fileExporter`/原生保存面板选择目标目录和文件名。导出在后台 actor 中执行，并显示可取消的确定进度。
+用户对已完成书籍执行“导出有声书…”，使用原生保存面板选择目标位置和 `.m4b` 文件名。导出在后台执行，并显示可取消的确定进度。
 
 ```text
-Book Title - Author.zip
-├── 01 - Chapter Title.m4b
-├── 02 - Chapter Title.m4b
-├── ...
-├── cover.jpg
-├── metadata.json
-└── README.txt
+Book Title.m4b
+├── AAC-LC 单一音频时间轴
+├── 带起止时间的章节文本轨（chapterList 关联）
+├── 封面艺术
+└── 标题、作者、旁白者、类型、出版日期与语言元数据
 ```
 
-`metadata.json` 使用版本化 Codable schema，包含书名、作者、语言、章节顺序、文件名、时长、文本哈希、模型 ID 和生成时间；不再重复写入章节正文。`README.txt` 使用 UTF-8，面向用户说明文件内容。
+导出器按阅读顺序将每章已有 M4B 解码并标准化，再合并到连续时间轴；每章标题作为独立定时样本写入章节轨，使播放器可以跳转。封面及书籍元数据直接写入 MPEG-4 容器，不生成旁车文件。
 
-导出先写目标目录中的隐藏临时文件，完成并校验中央目录后再原子改名。取消或失败时删除临时文件，不覆盖已有同名归档；同名由系统保存面板确认。
+导出先在 App 缓存目录写临时文件，使用 AVFoundation 回读校验音频轨、章节顺序、标题和封面后再提交到用户选择的位置。取消或失败时删除临时文件；同名覆盖由系统保存面板确认。书签及 iCloud 收听位置由支持 M4B 的播放器（例如 Apple Books）管理；变速且不变调同样属于播放器播放能力，文件保持标准 AAC 音频，不预先改变音速或音调。
 
 ---
 
@@ -629,7 +627,7 @@ HIG 建议避免把关键信息只放在窗口底部，因此当前转换进度�
 
 - 启用 App Sandbox，只申请 User Selected File Read/Write；内部文件保存在 App 容器。
 - EPUB 内容、章节正文、模型请求和音频不进行网络上传。
-- 若 App 存在任何联网能力（如未来模型目录），必须与正文数据通道物理隔离，并在隐私说明中披露。
+- App 的网络客户端能力仅服务于用户主动发起的 Kokoro 模型包下载；请求只包含固定 URL 与 App User-Agent，不读取或附带书名、正文、音频、文件路径或其他用户内容。模型安装后可完全离线运行。
 - security-scoped URL 只在复制或导出期间短时持有；导出目录书签仅在用户明确选择后保存。
 - 解包防 Zip Slip、压缩炸弹、路径逃逸、符号链接与超大资源。
 - XPC 接口限制允许调用的方法、输入大小和文件位置，校验服务签名和协议版本。
@@ -684,12 +682,12 @@ ExportError
 - 状态机：所有合法迁移、非法迁移拒绝、暂停竞态、失败重试和异常退出恢复。
 - 调度：FIFO、并发 1/2、运行时上限、取消传播、模型锁定。
 - 文件：原子提交、同名清理、删除与撤销、磁盘空间不足。
-- ZIP：UTF-8 文件名、CRC、Deflate、ZIP64 边界和跨工具解压。
+- M4B 导出：多章时间轴、章节顺序、封面、作者/旁白者/类型/日期元数据、取消和原子提交。
 
 ### 16.2 集成测试
 
-- 使用确定性 `MockTTSRuntimeClient` 生成短 PCM，完整跑通 EPUB → M4B → ZIP。
-- 每个 M4B 用 AVURLAsset 回读音频轨、章节项、文本轨、封面和时长。
+- 使用确定性 `MockTTSRuntimeClient` 生成短 PCM，完整跑通 EPUB → 分章 M4B → 单文件 M4B。
+- 最终 M4B 用 AVURLAsset 回读单一音频轨、所有章节项、文本轨、封面、元数据和时长。
 - App 运行到任意 checkpoint 后模拟终止，重启验证不重复已完成章节。
 - XPC invalidation、timeout、cancel 和模型版本不兼容。
 
@@ -706,7 +704,7 @@ ExportError
 - 任一受控中断点重启后都能恢复，完成章节不重做。
 - 删除书籍不会触碰用户原始 EPUB。
 - M4B 在 Apple Books/QuickTime Player 可播放，AVFoundation 可读到规定轨道与元数据。
-- ZIP 可被 Finder Archive Utility 解压，顺序和文件名正确。
+- 最终导出只有一个 `.m4b` 文件，章节顺序、封面和元数据均可被 AVFoundation 回读。
 - 无第三方运行库进入 App 主体 target；若推理运行时包含非 Apple 组件，必须单独披露和签名。
 
 ---
@@ -738,7 +736,7 @@ ExportError
 
 - 模型列表、默认模型、能力展示。
 - XPC DTO、握手、状态、取消和 mock/real transport 切换。
-- CosyVoice3 目录记录与运行时联调边界。
+- Kokoro 下载、音色试听、真实 sherpa-onnx 合成与双架构验收。
 
 ### M4：任务与恢复
 
@@ -748,7 +746,7 @@ ExportError
 ### M5：媒体与导出
 
 - AAC/M4B、章节、封面、文本轨。
-- ZIP 导出、Finder 展示与媒体回读验证。
+- 单文件 M4B 合并导出、Finder 展示与媒体回读验证。
 
 ### M6：HIG 与质量
 
@@ -767,7 +765,7 @@ ExportError
 | FR-1.9 | §1.1、§6、§13 删除策略 |
 | FR-2.1～2.5 | §8、§12.5 模型协议与界面 |
 | FR-3.1～3.4 | §10 M4B 封装 |
-| FR-3.5～3.6 | §11 ZIP 导出 |
+| FR-3.5～3.6 | §11 单文件 M4B 导出 |
 | 多框架适配 | §8.3 capability-driven adapter |
 | SwiftData | §5 数据设计 |
 | 隐私/性能/扩展性 | §13、§14、§4 |
@@ -795,6 +793,6 @@ ExportError
 ## 20. 实现前仍需确认
 
 1. 发布渠道是 Mac App Store、Developer ID 直接分发，还是两者都支持；这会影响 XPC/运行时打包和审核策略。
-2. “全套使用苹果技术”是否也包含 TTS 推理层。如果包含，CosyVoice3 必须先完成 Core ML 转换与质量/性能验证，否则当前默认模型要求无法同时成立。
+2. 第三方 TTS 推理层采用 sherpa-onnx/ONNX Runtime CPU 后端；其余应用层继续使用 SwiftUI、SwiftData、AVFoundation、URLSession、CryptoKit 与 App Sandbox。
 3. M4B 文本轨在目标播放器中的最低兼容范围；设计以 Apple Books、QuickTime Player 和 AVFoundation 为优先验收对象。
 4. 最大可接受 EPUB 体积、章节长度和磁盘占用，用于冻结安全阈值与空间预检策略。

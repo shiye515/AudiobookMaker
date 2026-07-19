@@ -142,6 +142,7 @@ nonisolated struct ImportCoordinator: Sendable {
                 title: parsed.title,
                 author: parsed.author ?? String(localized: "未知作者"),
                 languageCode: parsed.language,
+                publicationDate: parsed.publicationDate,
                 sourceRelativePath: "Books/\(bookID.uuidString)/source.epub",
                 sourceSHA256: sourceHash,
                 coverRelativePath: coverRelativePath,

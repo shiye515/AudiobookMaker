@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: 系统提供统一模型目录
-系统 SHALL 展示运行时报告的模型名称、标识、框架、安装状态、加载状态和能力，并 SHALL 包含 `FunAudioLLM/Fun-CosyVoice3-0.5B-2512` 的默认目录记录。
+系统 SHALL 展示运行时报告的模型名称、标识、版本、框架、安装状态、加载状态、音色和能力，并 SHALL 包含 Apple 系统语音与 `sherpa-onnx/kokoro-multi-lang-v1_1-int8` 的目录记录。
 
 #### Scenario: 运行时提供默认模型
-- **WHEN** 运行时报告 CosyVoice3 0.5B 已安装且可加载
+- **WHEN** 运行时报告 Kokoro 已下载、验证且可加载
 - **THEN** 系统将其显示为可用模型并允许设为默认
 
 #### Scenario: 目录模型未安装

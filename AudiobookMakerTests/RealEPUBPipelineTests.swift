@@ -6,7 +6,7 @@ import Testing
 
 struct RealEPUBPipelineTests {
     @Test @MainActor func realEPUBParsesSynthesizesAndPackagesWhenConfigured() async throws {
-        let path = realEPUBPath
+        guard let path = realEPUBPath else { return }
         guard FileManager.default.fileExists(atPath: path) else {
             return
         }
@@ -44,7 +44,7 @@ struct RealEPUBPipelineTests {
     }
 
     @Test @MainActor func entireRealEPUBCompletesFourteenChapterExportWithMockRuntime() async throws {
-        let path = realEPUBPath
+        guard let path = realEPUBPath else { return }
         guard FileManager.default.fileExists(atPath: path) else { return }
         let originalURL = URL(filePath: path)
         let originalHash = try SHA256Hasher.hashFile(at: originalURL)
@@ -75,13 +75,17 @@ struct RealEPUBPipelineTests {
         #expect(book.chapters.count == 14)
         #expect(book.chapters.allSatisfy { $0.status == .completed })
 
-        let zipURL = root.appending(path: "李光耀论中国与世界.zip")
+        let audiobookURL = root.appending(path: "李光耀论中国与世界.m4b")
         _ = try await ExportCoordinator(
             repository: dependencies.repository,
             directories: dependencies.directories
-        ).export(bookID: draft.id, to: zipURL)
-        let archive = try ZipContainerReader(url: zipURL)
-        #expect(archive.paths.count { $0.hasSuffix(".m4b") } == 14)
+        ).export(bookID: draft.id, to: audiobookURL)
+        try await M4BValidator.validateAudiobook(
+            url: audiobookURL,
+            expectedTitle: book.title,
+            expectedChapterTitles: book.chapters.map(\.title),
+            expectsArtwork: false
+        )
         #expect(try SHA256Hasher.hashFile(at: originalURL) == originalHash)
         #expect(peakResidentBytes < 768 * 1_024 * 1_024)
         Attachment.record(
@@ -89,16 +93,14 @@ struct RealEPUBPipelineTests {
             named: "真实 EPUB 内存与完整性验收.txt"
         )
         Attachment.record(
-            [UInt8](try Data(contentsOf: zipURL)),
-            named: "李光耀论中国与世界-14章验收.zip"
+            [UInt8](try Data(contentsOf: audiobookURL)),
+            named: "李光耀论中国与世界-14章验收.m4b"
         )
 
     }
 
-    private var realEPUBPath: String {
+    private var realEPUBPath: String? {
         ProcessInfo.processInfo.environment["AUDIOBOOKMAKER_REAL_EPUB"]
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Downloads/李光耀论中国与世界_李光耀.epub").path
     }
 
     private func residentMemoryBytes() throws -> Int64 {

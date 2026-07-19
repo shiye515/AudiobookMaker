@@ -3,6 +3,90 @@ import Testing
 @testable import AudiobookMaker
 
 struct M4BPackagerTests {
+    @Test func packagesSingleAudiobookWithMultipleTimedChapterMarkers() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let runtime = await MockTTSRuntimeClient()
+        var chapters: [M4BAudiobookChapter] = []
+        for (index, title) in ["第一章", "第二章"].enumerated() {
+            let text = "\(title)的测试正文"
+            let segment = directory.appending(path: "segment-\(index).caf")
+            _ = try await runtime.synthesize(SynthesisRequest(text: text, outputURL: segment))
+            let chapterURL = directory.appending(path: "chapter-\(index).m4b")
+            _ = try await M4BPackager.package(M4BPackageRequest(
+                audioSegments: [segment], outputURL: chapterURL,
+                title: "整书测试", author: "测试作者", chapterTitle: title,
+                chapterIndex: index, languageCode: "zh-CN", fullText: text,
+                coverData: nil
+            ))
+            chapters.append(M4BAudiobookChapter(title: title, audioURL: chapterURL))
+        }
+        let output = directory.appending(path: "整书测试.m4b")
+
+        _ = try await M4BPackager.packageAudiobook(M4BAudiobookPackageRequest(
+            chapters: chapters,
+            outputURL: output,
+            title: "整书测试",
+            author: "测试作者",
+            narrator: "测试旁白",
+            genre: "有声书",
+            publicationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            languageCode: "zh-CN",
+            coverData: nil
+        ))
+
+        try await M4BValidator.validateAudiobook(
+            url: output,
+            expectedTitle: "整书测试",
+            expectedChapterTitles: ["第一章", "第二章"],
+            expectsArtwork: false
+        )
+        let asset = AVURLAsset(url: output)
+        #expect(try await asset.loadTracks(withMediaType: .audio).count == 1)
+    }
+
+    @Test func packagesManyChaptersWithoutTextTrackBackpressureTimeout() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let segment = directory.appending(path: "segment.caf")
+        _ = try await MockTTSRuntimeClient().synthesize(SynthesisRequest(
+            text: "短章节",
+            outputURL: segment
+        ))
+        let chapterURL = directory.appending(path: "chapter.m4b")
+        _ = try await M4BPackager.package(M4BPackageRequest(
+            audioSegments: [segment], outputURL: chapterURL,
+            title: "长书", author: "作者", chapterTitle: "模板章节",
+            chapterIndex: 0, languageCode: "zh-CN", fullText: "短章节",
+            coverData: nil
+        ))
+        let titles = (1...80).map { "第 \($0) 章" }
+        let output = directory.appending(path: "many-chapters.m4b")
+
+        _ = try await M4BPackager.packageAudiobook(M4BAudiobookPackageRequest(
+            chapters: titles.map { M4BAudiobookChapter(title: $0, audioURL: chapterURL) },
+            outputURL: output,
+            title: "长书",
+            author: "作者",
+            narrator: "旁白",
+            genre: "有声书",
+            publicationDate: Date(timeIntervalSince1970: 1_700_000_000),
+            languageCode: "zh-CN",
+            coverData: nil
+        ))
+
+        try await M4BValidator.validateAudiobook(
+            url: output,
+            expectedTitle: "长书",
+            expectedChapterTitles: titles,
+            expectsArtwork: false
+        )
+    }
+
     @Test func packagesMultipleSegmentsAndAtomicallyCommits() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)

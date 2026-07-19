@@ -215,7 +215,7 @@
     <!-- Runtime info pill -->
     <rect x="859" y="324" width="280" height="32" rx="8" fill="#f2f3f5"/>
     <circle cx="877" cy="340" r="5" fill="#30a46c"/>
-    <text x="890" y="345" class="ui caption">CosyVoice3 0.5B</text>
+    <text x="890" y="345" class="ui caption">Kokoro 多语言 Int8</text>
     <text x="1123" y="345" class="ui small secondary" text-anchor="end">本机运行</text>
 
     <!-- Chapters section -->

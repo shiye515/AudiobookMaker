@@ -10,7 +10,6 @@ final class AudiobookMakerUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments += ["-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN"]
         app.launch()
-        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["书籍"].firstMatch.waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["导入 EPUB"].firstMatch.waitForExistence(timeout: 5))
@@ -98,12 +97,16 @@ final class AudiobookMakerUITests: XCTestCase {
             "--uitest-populated-library",
         ]
         app.launch()
-        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 5))
+        let window = app.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 5))
+        window.click()
 
         app.typeKey(".", modifierFlags: .command)
-        XCTAssertTrue(app.buttons["继续"].waitForExistence(timeout: 5))
+        let primary = app.buttons["book.primaryAction"]
+        XCTAssertTrue(primary.waitForExistence(timeout: 5))
+        XCTAssertEqual(primary.label, "继续")
         app.typeKey(.return, modifierFlags: .command)
-        XCTAssertTrue(app.buttons["暂停"].waitForExistence(timeout: 5))
+        XCTAssertEqual(primary.label, "暂停")
 
         app.typeKey(.delete, modifierFlags: [])
         XCTAssertTrue(app.buttons["删除 App 管理的数据"].waitForExistence(timeout: 5))
@@ -122,6 +125,51 @@ final class AudiobookMakerUITests: XCTestCase {
         app.typeKey(",", modifierFlags: .command)
         XCTAssertTrue(app.staticTexts["转换"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["最大并发任务"].waitForExistence(timeout: 5))
+    }
+
+    @MainActor
+    func testModelMenuDownloadStateAndVoicePreviewFailureAreAccessible() throws {
+        let notInstalled = XCUIApplication()
+        notInstalled.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+            "--uitest-model-not-installed",
+            "--uitest-fixed-window",
+        ]
+        notInstalled.launch()
+        XCTAssertTrue(notInstalled.windows.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertTrue(menuExists(in: notInstalled, labels: ["Model", "模型"]))
+        selectKokoroFromMenu(in: notInstalled)
+        let notInstalledKokoro = notInstalled.descendants(matching: .any)["model.row.\(TTSModelCatalogTestID.kokoro)"]
+        XCTAssertTrue(notInstalledKokoro.waitForExistence(timeout: 5))
+        XCTAssertTrue(notInstalled.buttons["model.download"].waitForExistence(timeout: 5))
+        XCTAssertFalse(notInstalled.buttons["model.download"].label.isEmpty)
+        notInstalled.terminate()
+
+        let ready = XCUIApplication()
+        ready.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+            "--uitest-kokoro-ready",
+            "--uitest-fixed-window",
+        ]
+        ready.launch()
+        XCTAssertTrue(ready.windows.firstMatch.waitForExistence(timeout: 5))
+        selectKokoroFromMenu(in: ready)
+        let readyKokoro = ready.descendants(matching: .any)["model.row.\(TTSModelCatalogTestID.kokoro)"]
+        XCTAssertTrue(readyKokoro.waitForExistence(timeout: 5))
+        let voicePicker = ready.popUpButtons["voice.picker"]
+        XCTAssertTrue(voicePicker.waitForExistence(timeout: 5))
+        voicePicker.click()
+        let alternateVoice = ready.menuItems["中文女声 · zf_002"]
+        XCTAssertTrue(alternateVoice.waitForExistence(timeout: 5))
+        alternateVoice.click()
+        XCTAssertFalse(ready.staticTexts["所选音色不属于当前模型版本。"].exists)
+        let search = ready.textFields["voice.search"]
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.click(); search.typeText("zf_002")
+        XCTAssertTrue(ready.buttons["voice.preview"].exists)
+        XCTAssertFalse(ready.buttons["voice.preview"].label.isEmpty)
+        ready.buttons["voice.preview"].click()
+        XCTAssertTrue(ready.descendants(matching: .any)["voice.preview.error"].waitForExistence(timeout: 10))
     }
 
     @MainActor
@@ -157,7 +205,7 @@ final class AudiobookMakerUITests: XCTestCase {
     }
 
     @MainActor
-    func testEPUBToM4BToZIPEndToEndWithDeterministicRuntime() throws {
+    func testEPUBToSingleM4BEndToEndWithDeterministicRuntime() throws {
         let app = XCUIApplication()
         app.launchArguments += [
             "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
@@ -172,17 +220,38 @@ final class AudiobookMakerUITests: XCTestCase {
         let primaryAction = app.buttons["book.primaryAction"]
         XCTAssertTrue(primaryAction.waitForExistence(timeout: 5))
         XCTAssertEqual(primaryAction.label, "开始转换")
-        primaryAction.click()
+        XCTAssertTrue(primaryAction.isHittable)
+        // The final reloadBooks() call can replace the SwiftUI button between
+        // XCUI's lookup and click. Capture its on-screen coordinate after the
+        // accessibility assertions so the click survives that view refresh.
+        primaryAction.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).click()
         XCTAssertTrue(app.buttons["导出有声书…"].waitForExistence(timeout: 45))
         XCTAssertTrue(app.staticTexts["2 / 2 已完成"].waitForExistence(timeout: 5))
 
         app.buttons["导出有声书…"].click()
-        XCTAssertTrue(app.descendants(matching: .any)["export.completed"].waitForExistence(timeout: 30))
-        XCTAssertTrue(app.staticTexts["导出完成：端到端测试有声书.zip"].waitForExistence(timeout: 5))
+        let completion = app.descendants(matching: .any)["export.completed"]
+        XCTAssertTrue(completion.waitForExistence(timeout: 30))
+        XCTAssertTrue(app.staticTexts["导出完成：端到端测试有声书.m4b"].waitForExistence(timeout: 5))
+        XCTAssertTrue(completion.waitForNonExistence(timeout: 8))
     }
 
     @MainActor
     private func menuExists(in app: XCUIApplication, labels: [String]) -> Bool {
         labels.contains { app.menuBars.menuBarItems[$0].exists }
     }
+
+    @MainActor
+    private func selectKokoroFromMenu(in app: XCUIApplication) {
+        let englishModelMenu = app.menuBars.menuBarItems["Model"]
+        let modelMenu = englishModelMenu.exists ? englishModelMenu : app.menuBars.menuBarItems["模型"]
+        XCTAssertTrue(modelMenu.waitForExistence(timeout: 5))
+        modelMenu.click()
+        let kokoro = app.menuItems["Kokoro 多语言 Int8"]
+        XCTAssertTrue(kokoro.waitForExistence(timeout: 5))
+        kokoro.click()
+    }
+}
+
+private enum TTSModelCatalogTestID {
+    static let kokoro = "sherpa-onnx/kokoro-multi-lang-v1_1-int8"
 }

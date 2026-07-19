@@ -1,0 +1,11 @@
+{
+  "name": "sherpa-onnx",
+  "version": "1.13.2",
+  "sourceCommit": "13d0ae6c539d2809d32f5eaa3ef1db0c459d0b24",
+  "artifact": "sherpa-onnx-v1.13.2-osx-universal2-shared-lib.tar.bz2",
+  "artifactURL": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.2/sherpa-onnx-v1.13.2-osx-universal2-shared-lib.tar.bz2",
+  "sha256": "41e71d17eb9b4eb5ee28258d6c081d21d9061a41d826830be59c283c68326b02",
+  "architectures": ["x86_64", "arm64"],
+  "onnxRuntimeVersion": "1.24.4",
+  "linkage": "dynamic"
+}

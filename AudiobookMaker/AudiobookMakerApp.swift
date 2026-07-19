@@ -5,11 +5,19 @@
 //  Created by shiye on 2026/7/18.
 //
 
-import SwiftUI
+import AppKit
 import SwiftData
+import SwiftUI
+
+final class AudiobookMakerAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        true
+    }
+}
 
 @main
 struct AudiobookMakerApp: App {
+    @NSApplicationDelegateAdaptor(AudiobookMakerAppDelegate.self) private var appDelegate
     private let dependencies: DependencyContainer
     private let defaultWindowSize: CGSize
     @State private var store: LibraryPresentationStore
@@ -18,9 +26,10 @@ struct AudiobookMakerApp: App {
         do {
             let arguments = ProcessInfo.processInfo.arguments
             let isEndToEndUITest = arguments.contains("--uitest-e2e")
+            let usesIsolatedUITestData = arguments.contains { $0.hasPrefix("--uitest-") }
             let dependencies = try DependencyContainer(
-                inMemory: isEndToEndUITest,
-                rootOverride: isEndToEndUITest
+                inMemory: usesIsolatedUITestData,
+                rootOverride: usesIsolatedUITestData
                     ? FileManager.default.temporaryDirectory.appending(
                         path: "AudiobookMaker-UITest-\(ProcessInfo.processInfo.processIdentifier)",
                         directoryHint: .isDirectory
@@ -57,7 +66,7 @@ struct AudiobookMakerApp: App {
         }
 
         Settings {
-            SettingsView()
+            SettingsView(store: store)
         }
         .modelContainer(dependencies.modelContainer)
     }

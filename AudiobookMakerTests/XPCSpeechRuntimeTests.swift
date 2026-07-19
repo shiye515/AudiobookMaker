@@ -119,6 +119,33 @@ struct XPCSpeechRuntimeTests {
         #expect(decoded.text == request.text)
         #expect(decoded.outputRelativePath == request.outputRelativePath)
     }
+
+    @Test
+    func xpcInterfaceUsesSpecificSecureCodingClasses() throws {
+        let interface = TTSXPCInterfaceFactory.make()
+        let handshake = try #require(interface.classes(
+            for: NSSelectorFromString("handshakeWithReply:"),
+            argumentIndex: 0,
+            ofReply: true
+        ))
+        let request = try #require(interface.classes(
+            for: NSSelectorFromString("synthesize:withReply:"),
+            argumentIndex: 0,
+            ofReply: false
+        ))
+        let reply = try #require(interface.classes(
+            for: NSSelectorFromString("synthesize:withReply:"),
+            argumentIndex: 0,
+            ofReply: true
+        ))
+
+        #expect(!handshake.contains { ($0 as? AnyClass) == NSObject.self })
+        #expect(!request.contains { ($0 as? AnyClass) == NSObject.self })
+        #expect(!reply.contains { ($0 as? AnyClass) == NSObject.self })
+        #expect(handshake.contains { ($0 as? AnyClass) == XPCHandshakeReply.self })
+        #expect(request.contains { ($0 as? AnyClass) == XPCSynthesisRequestDTO.self })
+        #expect(reply.contains { ($0 as? AnyClass) == XPCSynthesisReplyDTO.self })
+    }
 }
 
 private final class XPCFixture: @unchecked Sendable {
@@ -162,7 +189,7 @@ private nonisolated final class MockXPCListenerDelegate: NSObject, NSXPCListener
     init(service: MockXPCSpeechService) { self.service = service }
 
     func listener(_ listener: NSXPCListener, shouldAcceptNewConnection connection: NSXPCConnection) -> Bool {
-        connection.exportedInterface = NSXPCInterface(with: TTSXPCServiceProtocol.self)
+        connection.exportedInterface = TTSXPCInterfaceFactory.make()
         connection.exportedObject = service
         connection.resume()
         return true

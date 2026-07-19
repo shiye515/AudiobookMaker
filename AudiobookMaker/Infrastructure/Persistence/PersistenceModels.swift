@@ -7,6 +7,7 @@ final class BookRecord {
     var title: String
     var author: String
     var languageCode: String?
+    var publicationDate: Date?
     var importedAt: Date
     var updatedAt: Date
     var sourceRelativePath: String
@@ -31,6 +32,7 @@ final class BookRecord {
         title: String,
         author: String,
         languageCode: String?,
+        publicationDate: Date? = nil,
         importedAt: Date = .now,
         sourceRelativePath: String,
         sourceSHA256: String,
@@ -41,6 +43,7 @@ final class BookRecord {
         self.title = title
         self.author = author
         self.languageCode = languageCode
+        self.publicationDate = publicationDate
         self.importedAt = importedAt
         self.updatedAt = importedAt
         self.sourceRelativePath = sourceRelativePath
@@ -109,6 +112,12 @@ final class TTSModelRecord {
     var runtimeRaw: String
     var capabilitiesData: Data?
     var lastValidatedAt: Date?
+    var version: String = "system"
+    var selectedVoiceID: String?
+    var downloadProgress: Double = 0
+    var failureMessage: String?
+    var downloadSize: Int64 = 0
+    var voicesData: Data?
 
     init(
         id: String,
@@ -133,6 +142,10 @@ final class TTSModelRecord {
 final class ConversionJobRecord {
     @Attribute(.unique) var id: UUID
     var modelID: String
+    var modelVersion: String = "system"
+    var voiceID: String?
+    var requestPurposeRaw: String = "conversion"
+    var legacyRuntimeDiagnostic: String?
     var stateRaw: String
     var priority: Int
     @Attribute(.unique) var queueOrdinal: Int64
@@ -154,11 +167,17 @@ final class ConversionJobRecord {
     init(
         id: UUID = UUID(),
         modelID: String,
+        modelVersion: String = "system",
+        voiceID: String? = nil,
+        requestPurposeRaw: String = "conversion",
         queueOrdinal: Int64,
         totalUnits: Int64
     ) {
         self.id = id
         self.modelID = modelID
+        self.modelVersion = modelVersion
+        self.voiceID = voiceID
+        self.requestPurposeRaw = requestPurposeRaw
         self.stateRaw = JobState.queued.rawValue
         self.priority = 0
         self.queueOrdinal = queueOrdinal
@@ -174,6 +193,9 @@ final class AppSettingRecord {
     var maxConcurrentJobs: Int
     var selectedModelID: String
     var keepIntermediatePCM: Bool
+    var selectedModelVersion: String = "system"
+    var selectedVoiceID: String?
+    var recentVoicesData: Data?
     var lastExportDirectoryBookmark: Data?
 
     init(

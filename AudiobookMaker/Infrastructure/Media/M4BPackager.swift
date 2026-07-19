@@ -26,10 +26,49 @@ nonisolated private final class AudioReadErrorBox: @unchecked Sendable {
     }
 }
 
+/// AVAssetWriter supports feeding separate inputs from separate queues. The
+/// framework types predate Swift Sendable annotations, so keep the related
+/// objects in one explicitly shared context for the two coordinated producers.
+nonisolated private final class AudiobookWriterContext: @unchecked Sendable {
+    let writer: AVAssetWriter
+    let audioInput: AVAssetWriterInput
+    let chapterInput: AVAssetWriterInput
+    let textDescription: CMFormatDescription
+
+    init(
+        writer: AVAssetWriter,
+        audioInput: AVAssetWriterInput,
+        chapterInput: AVAssetWriterInput,
+        textDescription: CMFormatDescription
+    ) {
+        self.writer = writer
+        self.audioInput = audioInput
+        self.chapterInput = chapterInput
+        self.textDescription = textDescription
+    }
+}
+
 nonisolated struct M4BPackageResult: Equatable, Sendable {
     let url: URL
     let durationSeconds: Double
     let textSHA256: String
+}
+
+nonisolated struct M4BAudiobookChapter: Sendable, Equatable {
+    let title: String
+    let audioURL: URL
+}
+
+nonisolated struct M4BAudiobookPackageRequest: Sendable {
+    let chapters: [M4BAudiobookChapter]
+    let outputURL: URL
+    let title: String
+    let author: String
+    let narrator: String
+    let genre: String
+    let publicationDate: Date
+    let languageCode: String?
+    let coverData: Data?
 }
 
 nonisolated enum PackagingError: Error, StableAppError, Equatable, Sendable {
@@ -222,6 +261,165 @@ nonisolated enum M4BPackager {
         )
     }
 
+    /// Combines the already converted chapter artifacts into one standards-based
+    /// audiobook file with a single audio timeline and timed chapter navigation.
+    @concurrent
+    static func packageAudiobook(
+        _ request: M4BAudiobookPackageRequest,
+        progress: (@Sendable (Double, String?) -> Void)? = nil
+    ) async throws -> URL {
+        guard !request.chapters.isEmpty else { throw PackagingError.noAudioSegments }
+        try FileManager.default.createDirectory(
+            at: request.outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let partialURL = request.outputURL
+            .deletingPathExtension()
+            .appendingPathExtension("partial")
+            .appendingPathExtension(request.outputURL.pathExtension)
+        try? FileManager.default.removeItem(at: partialURL)
+        let normalizedDirectory = request.outputURL.deletingLastPathComponent()
+            .appending(path: ".audiobook-normalized-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: normalizedDirectory) }
+        let normalizedSegments = try normalizeAudioSegments(
+            request.chapters.map(\.audioURL),
+            in: normalizedDirectory
+        )
+        var committed = false
+        defer { if !committed { try? FileManager.default.removeItem(at: partialURL) } }
+
+        let writer: AVAssetWriter
+        do {
+            writer = try AVAssetWriter(outputURL: partialURL, fileType: .m4a)
+        } catch {
+            throw PackagingError.cannotCreateWriter(error.localizedDescription)
+        }
+        let firstAsset = AVURLAsset(url: normalizedSegments[0])
+        guard let firstTrack = try await firstAsset.loadTracks(withMediaType: .audio).first,
+              let audioDescription = try await firstTrack.load(.formatDescriptions).first else {
+            throw PackagingError.validationFailed("标准化音频没有可读轨道")
+        }
+        let textDescription = try makeTextDescription()
+        let audioInput = AVAssetWriterInput(
+            mediaType: .audio,
+            outputSettings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: sampleRate,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: bitRate,
+            ],
+            sourceFormatHint: audioDescription
+        )
+        let chapterInput = AVAssetWriterInput(
+            mediaType: .text,
+            outputSettings: nil,
+            sourceFormatHint: textDescription
+        )
+        audioInput.expectsMediaDataInRealTime = false
+        chapterInput.expectsMediaDataInRealTime = false
+        chapterInput.mediaDataLocation = .interleavedWithMainMediaData
+        try add(audioInput, name: "音频", writer: writer)
+        try add(chapterInput, name: "章节", writer: writer)
+        guard audioInput.canAddTrackAssociation(
+            withTrackOf: chapterInput,
+            type: AVAssetTrack.AssociationType.chapterList.rawValue
+        ) else { throw PackagingError.cannotAssociateChapterTrack }
+        audioInput.addTrackAssociation(
+            withTrackOf: chapterInput,
+            type: AVAssetTrack.AssociationType.chapterList.rawValue
+        )
+        writer.metadata = audiobookMetadata(for: request)
+        guard writer.startWriting() else { throw writerFailure(writer) }
+        writer.startSession(atSourceTime: .zero)
+        let context = AudiobookWriterContext(
+            writer: writer,
+            audioInput: audioInput,
+            chapterInput: chapterInput,
+            textDescription: textDescription
+        )
+
+        // Feed both inputs together. Writing every chapter marker before starting
+        // audio eventually fills AVAssetWriter's text queue on real, long books;
+        // the text input then stays back-pressured while the untouched audio input
+        // is the only thing that could let the muxer advance.
+        async let chapterWriting: Void = appendAudiobookChapters(
+            request: request,
+            normalizedSegments: normalizedSegments,
+            context: context,
+            progress: progress
+        )
+        async let audioWriting: CMTime = appendAudiobookAudio(
+            normalizedSegments,
+            context: context
+        )
+        let (_, finalDuration) = try await (chapterWriting, audioWriting)
+        guard finalDuration.isNumeric, finalDuration.seconds > 0 else {
+            throw PackagingError.unreadableAudio
+        }
+        progress?(0.9, nil)
+        await writer.finishWriting()
+        guard writer.status == .completed else { throw writerFailure(writer) }
+
+        try await M4BValidator.validateAudiobook(
+            url: partialURL,
+            expectedTitle: request.title,
+            expectedChapterTitles: request.chapters.map(\.title),
+            expectsArtwork: request.coverData != nil
+        )
+        do {
+            try? FileManager.default.removeItem(at: request.outputURL)
+            try FileManager.default.moveItem(at: partialURL, to: request.outputURL)
+        } catch {
+            throw PackagingError.commitFailed(error.localizedDescription)
+        }
+        committed = true
+        progress?(1, nil)
+        return request.outputURL
+    }
+
+    private static func appendAudiobookChapters(
+        request: M4BAudiobookPackageRequest,
+        normalizedSegments: [URL],
+        context: AudiobookWriterContext,
+        progress: (@Sendable (Double, String?) -> Void)?
+    ) async throws {
+        var chapterOffset = CMTime.zero
+        for (index, segment) in normalizedSegments.enumerated() {
+            try Task.checkCancellation()
+            let duration = try await AVURLAsset(url: segment).load(.duration)
+            guard duration.isNumeric, duration.seconds > 0 else {
+                throw PackagingError.unreadableAudio
+            }
+            try await appendText(
+                request.chapters[index].title,
+                duration: duration,
+                presentationTime: chapterOffset,
+                input: context.chapterInput,
+                description: context.textDescription,
+                writer: context.writer
+            )
+            chapterOffset = CMTimeAdd(chapterOffset, duration)
+            progress?(
+                0.1 + 0.2 * Double(index + 1) / Double(request.chapters.count),
+                request.chapters[index].title
+            )
+        }
+        context.chapterInput.markAsFinished()
+    }
+
+    private static func appendAudiobookAudio(
+        _ urls: [URL],
+        context: AudiobookWriterContext
+    ) async throws -> CMTime {
+        let duration = try await appendAudioSegments(
+            urls,
+            input: context.audioInput,
+            writer: context.writer
+        )
+        context.audioInput.markAsFinished()
+        return duration
+    }
+
     /// Normalizes every runtime result to the frozen packaging format before it
     /// reaches AVAssetWriter. This keeps mixed sample rates/channel layouts from
     /// leaking into the chapter timeline and makes the conversion boundary explicit.
@@ -364,6 +562,7 @@ nonisolated enum M4BPackager {
     private static func appendText(
         _ text: String,
         duration: CMTime,
+        presentationTime: CMTime = .zero,
         input: AVAssetWriterInput,
         description: CMFormatDescription,
         writer: AVAssetWriter
@@ -399,7 +598,7 @@ nonisolated enum M4BPackager {
         guard status == noErr else { throw PackagingError.appendFailed("无法写入文本缓冲区") }
         var timing = CMSampleTimingInfo(
             duration: duration,
-            presentationTimeStamp: .zero,
+            presentationTimeStamp: presentationTime,
             decodeTimeStamp: .invalid
         )
         var size = payload.count
@@ -450,6 +649,36 @@ nonisolated enum M4BPackager {
                 .commonIdentifierDescription,
                 value: "第 \(request.chapterIndex + 1) 章 · \(request.chapterTitle)"
             ),
+        ]
+        if let language = request.languageCode {
+            result.append(metadataItem(.commonIdentifierLanguage, value: language))
+        }
+        if let cover = request.coverData {
+            let artwork = AVMutableMetadataItem()
+            artwork.identifier = .commonIdentifierArtwork
+            artwork.value = cover as NSData
+            artwork.dataType = cover.starts(with: [0x89, 0x50, 0x4e, 0x47])
+                ? kCMMetadataBaseDataType_PNG as String
+                : kCMMetadataBaseDataType_JPEG as String
+            result.append(artwork)
+        }
+        return result
+    }
+
+    private static func audiobookMetadata(
+        for request: M4BAudiobookPackageRequest
+    ) -> [AVMetadataItem] {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        var result = [
+            metadataItem(.commonIdentifierTitle, value: request.title),
+            metadataItem(.commonIdentifierArtist, value: request.author),
+            metadataItem(.commonIdentifierAlbumName, value: request.title),
+            metadataItem(.iTunesMetadataAuthor, value: request.author),
+            metadataItem(.iTunesMetadataPerformer, value: request.narrator),
+            metadataItem(.iTunesMetadataUserGenre, value: request.genre),
+            metadataItem(.iTunesMetadataReleaseDate, value: formatter.string(from: request.publicationDate)),
+            metadataItem(.iTunesMetadataEncodingTool, value: "AudiobookMaker"),
         ]
         if let language = request.languageCode {
             result.append(metadataItem(.commonIdentifierLanguage, value: language))
@@ -642,6 +871,47 @@ nonisolated private final class AudioAppendPump: @unchecked Sendable {
 }
 
 nonisolated enum M4BValidator {
+    static func validateAudiobook(
+        url: URL,
+        expectedTitle: String,
+        expectedChapterTitles: [String],
+        expectsArtwork: Bool
+    ) async throws {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw PackagingError.validationFailed("文件不存在")
+        }
+        let asset = AVURLAsset(url: url)
+        let duration = try await asset.load(.duration)
+        let audio = try await asset.loadTracks(withMediaType: .audio)
+        guard duration.isNumeric, duration.seconds > 0, audio.count == 1 else {
+            throw PackagingError.validationFailed("整书音频轨或时长无效")
+        }
+        let associated = try await audio[0].loadAssociatedTracks(ofType: .chapterList)
+        guard associated.count == 1 else {
+            throw PackagingError.validationFailed("整书章节轨未关联")
+        }
+        let chapterTitles = try readAllText(from: associated[0], asset: asset)
+        guard chapterTitles == expectedChapterTitles else {
+            throw PackagingError.validationFailed("整书章节标记不匹配")
+        }
+        let metadata = try await asset.load(.commonMetadata)
+        var titleMatches = false
+        var hasArtwork = false
+        for item in metadata {
+            if item.commonKey == .commonKeyTitle,
+               try await item.load(.stringValue) == expectedTitle {
+                titleMatches = true
+            }
+            if item.commonKey == .commonKeyArtwork,
+               try await item.load(.dataValue) != nil {
+                hasArtwork = true
+            }
+        }
+        guard titleMatches, !expectsArtwork || hasArtwork else {
+            throw PackagingError.validationFailed("整书标题或封面元数据不完整")
+        }
+    }
+
     @discardableResult
     static func validate(
         url: URL,
@@ -680,11 +950,19 @@ nonisolated enum M4BValidator {
     }
 
     private static func readText(from track: AVAssetTrack, asset: AVAsset) throws -> String {
+        guard let first = try readAllText(from: track, asset: asset).first else {
+            throw PackagingError.validationFailed("文本轨没有正文")
+        }
+        return first
+    }
+
+    private static func readAllText(from track: AVAssetTrack, asset: AVAsset) throws -> [String] {
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
         guard reader.canAdd(output) else { throw PackagingError.validationFailed("文本轨不可读") }
         reader.add(output)
         guard reader.startReading() else { throw PackagingError.validationFailed("文本轨无法启动") }
+        var result: [String] = []
         while let sample = output.copyNextSampleBuffer() {
             guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
             let count = CMBlockBufferGetDataLength(block)
@@ -694,8 +972,11 @@ nonisolated enum M4BValidator {
             }
             guard status == noErr, data.count >= 2 else { continue }
             let length = Int(data[0]) << 8 | Int(data[1])
-            if length > 0 { return String(decoding: data.dropFirst(2).prefix(length), as: UTF8.self) }
+            if length > 0 {
+                result.append(String(decoding: data.dropFirst(2).prefix(length), as: UTF8.self))
+            }
         }
-        throw PackagingError.validationFailed("文本轨没有正文")
+        guard !result.isEmpty else { throw PackagingError.validationFailed("文本轨没有正文") }
+        return result
     }
 }

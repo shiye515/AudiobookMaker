@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import AudiobookMaker
@@ -5,39 +6,37 @@ import Testing
 @Suite(.serialized)
 struct ExportCoordinatorTests {
     @Test @MainActor
-    func completedUnicodeBookExportsAndSystemDittoExtractsIt() async throws {
+    func completedUnicodeBookExportsOneValidatedM4B() async throws {
         let fixture = try await ExportFixture.make(
             completed: true,
             title: "世界：你好/再见",
-            chapterTitle: "第一章：出发/归来"
+            chapterTitle: "第一章：出发/归来",
+            modelID: TTSModelCatalog.kokoroID
         )
         defer { fixture.cleanup() }
-        let destination = fixture.root.appending(path: "李光耀论中国与世界.zip")
+        let destination = fixture.root.appending(path: "李光耀论中国与世界.m4b")
 
         _ = try await fixture.exporter.export(bookID: fixture.bookID, to: destination)
-        let archive = try ZipContainerReader(url: destination)
-        #expect(archive.paths.contains("metadata.json"))
-        #expect(archive.paths.contains("README.txt"))
-        #expect(archive.paths.contains { $0 == "有声书/0001-第一章：出发-归来.m4b" })
-
-        let extracted = fixture.root.appending(path: "FinderExtract", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: extracted, withIntermediateDirectories: true)
-        let process = Process()
-        process.executableURL = URL(filePath: "/usr/bin/ditto")
-        process.arguments = ["-x", "-k", destination.path, extracted.path]
-        try process.run()
-        process.waitUntilExit()
-        #expect(process.terminationStatus == 0)
-        #expect(FileManager.default.fileExists(
-            atPath: extracted.appending(path: "metadata.json").path
-        ))
+        #expect(destination.pathExtension == "m4b")
+        try await M4BValidator.validateAudiobook(
+            url: destination,
+            expectedTitle: "世界：你好/再见",
+            expectedChapterTitles: ["第一章：出发/归来"],
+            expectsArtwork: true
+        )
+        let asset = AVURLAsset(url: destination)
+        let metadata = try await asset.loadMetadata(for: .iTunesMetadata)
+        #expect(try await metadata.first(where: { $0.identifier == .iTunesMetadataAuthor })?.load(.stringValue) == "测试作者")
+        #expect(try await metadata.first(where: { $0.identifier == .iTunesMetadataPerformer })?.load(.stringValue) != nil)
+        #expect(try await metadata.first(where: { $0.identifier == .iTunesMetadataUserGenre })?.load(.stringValue) == "有声书")
+        #expect(try await metadata.first(where: { $0.identifier == .iTunesMetadataReleaseDate })?.load(.stringValue) != nil)
     }
 
     @Test @MainActor
     func incompleteBookCannotExport() async throws {
         let fixture = try await ExportFixture.make(completed: false)
         defer { fixture.cleanup() }
-        let destination = fixture.root.appending(path: "incomplete.zip")
+        let destination = fixture.root.appending(path: "incomplete.m4b")
 
         await #expect(throws: ExportError.bookIncomplete) {
             _ = try await fixture.exporter.export(bookID: fixture.bookID, to: destination)
@@ -47,21 +46,20 @@ struct ExportCoordinatorTests {
 
     @Test @MainActor
     func cancellationRemovesTemporaryArchiveAndDoesNotCommitDestination() async throws {
-        let fixture = try await ExportFixture.make(completed: true, artifactSize: 128 * 1_024 * 1_024)
+        let fixture = try await ExportFixture.make(completed: true)
         defer { fixture.cleanup() }
-        let destination = fixture.root.appending(path: "cancelled.zip")
+        let destination = fixture.root.appending(path: "cancelled.m4b")
         let operation = Task {
             try await fixture.exporter.export(bookID: fixture.bookID, to: destination)
         }
 
-        try await Task.sleep(for: .milliseconds(5))
         operation.cancel()
         await #expect(throws: CancellationError.self) { _ = try await operation.value }
         #expect(!FileManager.default.fileExists(atPath: destination.path))
         let leftovers = try FileManager.default.contentsOfDirectory(
-            at: fixture.root,
+            at: fixture.dependencies.directories.cacheRoot,
             includingPropertiesForKeys: nil
-        ).filter { $0.lastPathComponent.contains(".partial.zip") }
+        ).filter { $0.lastPathComponent.contains("Export-") && $0.pathExtension == "m4b" }
         #expect(leftovers.isEmpty)
     }
 
@@ -69,7 +67,7 @@ struct ExportCoordinatorTests {
     func insufficientDiskSpaceFailsBeforeCreatingArchive() async throws {
         let fixture = try await ExportFixture.make(completed: true)
         defer { fixture.cleanup() }
-        let destination = fixture.root.appending(path: "no-space.zip")
+        let destination = fixture.root.appending(path: "no-space.m4b")
         let exporter = ExportCoordinator(
             repository: fixture.dependencies.repository,
             directories: fixture.dependencies.directories,
@@ -101,7 +99,7 @@ struct ExportCoordinatorTests {
                 ofItemAtPath: locked.path
             )
         }
-        let destination = locked.appending(path: "revoked.zip")
+        let destination = locked.appending(path: "revoked.m4b")
 
         await #expect(throws: ExportError.invalidDestination) {
             _ = try await fixture.exporter.export(bookID: fixture.bookID, to: destination)
@@ -134,7 +132,7 @@ private struct ExportFixture {
         completed: Bool,
         title: String = "导出测试",
         chapterTitle: String = "第一章",
-        artifactSize: UInt64 = 4_096
+        modelID: String = LibraryRepository.systemVoiceID
     ) async throws -> ExportFixture {
         let root = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)
@@ -157,7 +155,7 @@ private struct ExportFixture {
             sourceRelativePath: "Books/\(bookID)/source.epub",
             sourceSHA256: UUID().uuidString.replacingOccurrences(of: "-", with: "")
                 + UUID().uuidString.replacingOccurrences(of: "-", with: ""),
-            coverRelativePath: nil,
+            coverRelativePath: "Books/\(bookID)/cover.png",
             totalCharacters: Int64(text.count),
             chapters: [ImportedChapterDraft(
                 id: chapterID,
@@ -169,19 +167,35 @@ private struct ExportFixture {
                 characterCount: text.count
             )]
         ))
+        let coverURL = bookDirectory.appending(path: "cover.png")
+        let coverData = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")!
+        try coverData.write(to: coverURL)
         if completed {
             let audioURL = bookDirectory.appending(path: "audio/0001.m4b")
             try FileManager.default.createDirectory(
                 at: audioURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-            FileManager.default.createFile(atPath: audioURL.path, contents: nil)
-            let handle = try FileHandle(forWritingTo: audioURL)
-            try handle.truncate(atOffset: artifactSize)
-            try handle.close()
+            let segmentURL = bookDirectory.appending(path: "audio/0001.caf")
+            _ = try await MockTTSRuntimeClient().synthesize(SynthesisRequest(
+                text: "用于导出测试的正文",
+                languageCode: "zh-CN",
+                outputURL: segmentURL
+            ))
+            _ = try await M4BPackager.package(M4BPackageRequest(
+                audioSegments: [segmentURL],
+                outputURL: audioURL,
+                title: title,
+                author: "测试作者",
+                chapterTitle: chapterTitle,
+                chapterIndex: 0,
+                languageCode: "zh-CN",
+                fullText: "用于导出测试的正文",
+                coverData: coverData
+            ))
             let jobID = try await dependencies.repository.beginConversion(
                 bookID: bookID,
-                modelID: LibraryRepository.systemVoiceID
+                modelID: modelID
             )
             try await dependencies.repository.completeChapter(
                 id: chapterID,

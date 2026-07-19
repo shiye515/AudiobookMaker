@@ -9,6 +9,8 @@ nonisolated struct AppDirectories: Sendable {
     var trash: URL { root.appending(path: ".Trash", directoryHint: .isDirectory) }
     var runtime: URL { root.appending(path: "Runtime", directoryHint: .isDirectory) }
     var models: URL { runtime.appending(path: "Models", directoryHint: .isDirectory) }
+    var modelStaging: URL { runtime.appending(path: ".ModelStaging", directoryHint: .isDirectory) }
+    var modelResumeData: URL { runtime.appending(path: ".ModelResumeData", directoryHint: .isDirectory) }
     var importCaches: URL { cacheRoot.appending(path: "Imports", directoryHint: .isDirectory) }
 
     static func live(fileManager: FileManager = .default) throws -> AppDirectories {
@@ -42,6 +44,8 @@ nonisolated struct AppDirectories: Sendable {
         try fileManager.createDirectory(at: trash, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: runtime, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: models, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: modelStaging, withIntermediateDirectories: true)
+        try fileManager.createDirectory(at: modelResumeData, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: importCaches, withIntermediateDirectories: true)
     }
@@ -55,6 +59,32 @@ nonisolated struct AppDirectories: Sendable {
             .replacingOccurrences(of: "/", with: "--")
             .replacingOccurrences(of: ":", with: "-")
         return models.appending(path: safeID, directoryHint: .isDirectory)
+    }
+
+    func modelVersionDirectory(id: String, version: String) throws -> URL {
+        let safeVersion = try safeModelComponent(version)
+        return modelDirectory(id: id).appending(path: safeVersion, directoryHint: .isDirectory)
+    }
+
+    func modelStagingDirectory(id: String, version: String) throws -> URL {
+        let safeID = try safeModelComponent(id.replacingOccurrences(of: "/", with: "--"))
+        let safeVersion = try safeModelComponent(version)
+        return modelStaging.appending(path: "\(safeID)-\(safeVersion)", directoryHint: .isDirectory)
+    }
+
+    func modelResumeDataURL(id: String, version: String) throws -> URL {
+        let safeID = try safeModelComponent(id.replacingOccurrences(of: "/", with: "--"))
+        let safeVersion = try safeModelComponent(version)
+        return modelResumeData.appending(path: "\(safeID)-\(safeVersion).resume")
+    }
+
+    private func safeModelComponent(_ value: String) throws -> String {
+        guard !value.isEmpty,
+              value.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil,
+              value != ".", value != ".." else {
+            throw AppDirectoryError.unsafeRelativePath
+        }
+        return value
     }
 
     func relativePath(for url: URL) throws -> String {

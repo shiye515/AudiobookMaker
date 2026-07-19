@@ -7,6 +7,7 @@ struct ContentView: View {
     @State private var isImporterPresented = false
     @State private var isQueuePresented = false
     @State private var isDeletePresented = false
+    @State private var pauseKeyMonitor: Any?
 
     init(mode: LibraryPresentationStore.Mode = .populated) {
         _store = State(initialValue: LibraryPresentationStore(mode: mode))
@@ -39,6 +40,7 @@ struct ContentView: View {
                     if let book = store.selectedBook {
                         BookDetailView(
                             book: book,
+                            modelLabel: store.modelLabel(for: book),
                             primaryAction: { store.performPrimaryBookAction() },
                             deleteAction: { isDeletePresented = true },
                             queueAction: { isQueuePresented = true },
@@ -54,9 +56,7 @@ struct ContentView: View {
                     }
                 case .models:
                     if let model = store.selectedModel {
-                        ModelDetailView(model: model) {
-                            store.makeSelectedModelDefault()
-                        }
+                        ModelDetailView(model: model, store: store)
                     } else {
                         ContentUnavailableView(
                             "选择一个模型",
@@ -75,45 +75,26 @@ struct ContentView: View {
             }
         }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Text(store.section.title)
-                    .font(.headline)
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button(action: presentImporter) {
-                    if store.isImporting {
-                        ProgressView()
-                            .controlSize(.small)
+            if store.section == .books {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: presentImporter) {
+                        if store.isImporting {
+                            HStack(spacing: 6) {
+                                ProgressView()
+                                    .controlSize(.small)
+                                Text("导入中")
+                            }
                             .accessibilityLabel("正在导入 EPUB")
-                    } else {
-                        Label("导入 EPUB", systemImage: "plus")
+                        } else {
+                            Text("导入")
+                        }
                     }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(store.isImporting)
+                    .help("导入一本或多本 EPUB（⌘O）")
+                    .accessibilityIdentifier("toolbar.import")
+                    .accessibilityHint("打开文件选择器，可选择一本或多本 EPUB")
                 }
-                .disabled(store.isImporting)
-                .help("导入一本或多本 EPUB（⌘O）")
-                .accessibilityIdentifier("toolbar.import")
-                .accessibilityHint("打开文件选择器，可选择一本或多本 EPUB")
-            }
-            ToolbarItem(placement: .automatic) {
-                if let book = store.selectedBook, book.status == .converting {
-                    Label(
-                        book.progress.formatted(.percent.precision(.fractionLength(0))),
-                        systemImage: "waveform"
-                    )
-                    .foregroundStyle(.secondary)
-                    .accessibilityLabel("当前转换进度")
-                    .accessibilityValue(book.progress.formatted(.percent))
-                }
-            }
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    isQueuePresented = true
-                } label: {
-                    Label("队列 \(store.queuedCount)", systemImage: "list.bullet.rectangle")
-                }
-                .help("显示转换队列")
-                .accessibilityIdentifier("toolbar.queue")
-                .accessibilityHint("打开当前排队和转换中的书籍列表")
             }
         }
         .overlay(alignment: .bottomTrailing) {
@@ -138,34 +119,6 @@ struct ContentView: View {
                 .accessibilityElement(children: .contain)
             }
         }
-        .overlay {
-            if store.isExporting {
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("正在导出有声书")
-                        .font(.headline)
-                    ProgressView(value: store.exportProgress)
-                        .frame(width: 320)
-                        .accessibilityLabel("导出进度")
-                        .accessibilityValue(store.exportProgress.formatted(.percent))
-                    if let currentFile = store.exportCurrentFile {
-                        Text(currentFile)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    HStack {
-                        Text(store.exportProgress, format: .percent.precision(.fractionLength(0)))
-                            .monospacedDigit()
-                        Spacer()
-                        Button("取消导出", role: .cancel) { store.cancelExport() }
-                    }
-                }
-                .padding(20)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
-                .shadow(radius: 18, y: 8)
-                .accessibilityElement(children: .contain)
-            }
-        }
         .fileImporter(
             isPresented: $isImporterPresented,
             allowedContentTypes: [UTType(filenameExtension: "epub") ?? .data],
@@ -177,6 +130,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $isQueuePresented) {
             QueueSheet(store: store)
+        }
+        .sheet(isPresented: exportDialogPresented) {
+            ExportProgressDialog(store: store)
         }
         .confirmationDialog(
             "删除“\(store.selectedBook?.title ?? "这本书")”？",
@@ -220,6 +176,14 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .exportSelectedBook)) { _ in
             store.exportSelectedBook()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .selectSystemModel)) { _ in
+            store.section = .models; store.selectedModelID = TTSModelCatalog.systemID
+            store.makeSelectedModelDefault()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .selectKokoroModel)) { _ in
+            store.section = .models; store.selectedModelID = TTSModelCatalog.kokoroID
+            if store.selectedModel?.isAvailable == true { store.makeSelectedModelDefault() }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
             guard let window = note.object as? NSWindow else { return }
             let width = window.contentLayoutRect.width
@@ -234,6 +198,17 @@ struct ContentView: View {
         }
         .task {
             await store.load()
+            if ProcessInfo.processInfo.arguments.contains("--uitest-fixed-window"),
+               let window = NSApp.windows.first(where: { $0.isVisible }),
+               let screen = NSScreen.screens.first {
+                let size = NSSize(width: 1_180, height: 760)
+                let visibleFrame = screen.visibleFrame
+                let origin = NSPoint(
+                    x: visibleFrame.midX - size.width / 2,
+                    y: visibleFrame.midY - size.height / 2
+                )
+                window.setFrame(NSRect(origin: origin, size: size), display: true)
+            }
             if ProcessInfo.processInfo.arguments.contains("--uitest-narrow-window") {
                 store.columnVisibility = .detailOnly
                 await Task.yield()
@@ -242,6 +217,19 @@ struct ContentView: View {
                     window.setContentSize(NSSize(width: 760, height: 600))
                 }
             }
+        }
+        .onAppear {
+            guard pauseKeyMonitor == nil else { return }
+            pauseKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                guard modifiers == .command, event.charactersIgnoringModifiers == "." else { return event }
+                store.pauseSelectedBook()
+                return nil
+            }
+        }
+        .onDisappear {
+            if let pauseKeyMonitor { NSEvent.removeMonitor(pauseKeyMonitor) }
+            pauseKeyMonitor = nil
         }
         .alert(
             "操作未完成",
@@ -259,6 +247,13 @@ struct ContentView: View {
     private func presentImporter() {
         store.section = .books
         isImporterPresented = true
+    }
+
+    private var exportDialogPresented: Binding<Bool> {
+        Binding(
+            get: { store.isExporting },
+            set: { _ in }
+        )
     }
 }
 
@@ -303,14 +298,12 @@ private struct SidebarView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("sidebar.localProcessing")
         }
-        .navigationTitle("AudiobookMaker")
     }
 }
 
 private struct BookListView: View {
     @Bindable var store: LibraryPresentationStore
     let importAction: () -> Void
-    @FocusState private var isSearchFocused: Bool
 
     var body: some View {
         Group {
@@ -345,25 +338,6 @@ private struct BookListView: View {
                     }
                 }
                 .listStyle(.inset)
-            }
-        }
-        .navigationTitle("我的书籍")
-        .searchable(text: $store.searchText, prompt: "搜索书名或作者")
-        .searchFocused($isSearchFocused)
-        .onReceive(NotificationCenter.default.publisher(for: .focusBookSearch)) { _ in
-            isSearchFocused = true
-        }
-        .toolbar {
-            ToolbarItem {
-                Menu {
-                    Picker("状态", selection: $store.filter) {
-                        ForEach(BookFilter.allCases) { filter in
-                            Text(filter.title).tag(filter)
-                        }
-                    }
-                } label: {
-                    Label("筛选", systemImage: "line.3.horizontal.decrease")
-                }
             }
         }
         .dropDestination(for: URL.self) { urls, _ in
@@ -415,6 +389,7 @@ private struct BookRow: View {
 
 private struct BookDetailView: View {
     let book: BookSnapshot
+    let modelLabel: String
     let primaryAction: () -> Void
     let deleteAction: () -> Void
     let queueAction: () -> Void
@@ -444,7 +419,7 @@ private struct BookDetailView: View {
                             .foregroundStyle(.secondary)
                             .monospacedDigit()
                     }
-                    Label("Apple 系统语音 · 本机运行", systemImage: "waveform.badge.checkmark")
+                    Label(modelLabel, systemImage: "waveform.badge.checkmark")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -508,21 +483,41 @@ private struct BookDetailView: View {
                     }
                     .width(70)
                     TableColumn("状态") { chapter in
-                        Label(chapter.status.label, systemImage: chapter.status.symbol)
-                            .foregroundStyle(chapter.status.tint)
-                            .accessibilityLabel(String(
-                                format: String(localized: "accessibility.chapter.status"),
-                                chapter.index
-                            ))
-                            .accessibilityValue(chapter.status.label)
-                            .accessibilityIdentifier("chapter.status.\(chapter.index)")
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Label(chapter.status.label, systemImage: chapter.status.symbol)
+                                    .foregroundStyle(chapter.status.tint)
+                                if let progress = chapter.progress {
+                                    Spacer(minLength: 4)
+                                    Text(progress, format: .percent.precision(.fractionLength(0)))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .monospacedDigit()
+                                }
+                            }
+                            if let progress = chapter.progress {
+                                ProgressView(value: progress)
+                                    .controlSize(.small)
+                                    .accessibilityLabel("第 \(chapter.index) 章转换进度")
+                                    .accessibilityValue(progress.formatted(.percent))
+                                    .accessibilityIdentifier("chapter.progress.\(chapter.index)")
+                            }
+                        }
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel(String(
+                            format: String(localized: "accessibility.chapter.status"),
+                            chapter.index
+                        ))
+                        .accessibilityValue(chapter.progress.map {
+                            "\(chapter.status.label)，\($0.formatted(.percent))"
+                        } ?? chapter.status.label)
+                        .accessibilityIdentifier("chapter.status.\(chapter.index)")
                     }
-                    .width(min: 100, ideal: 120)
+                    .width(min: 140, ideal: 170)
                 }
             }
             .padding(20)
         }
-        .navigationTitle(book.title)
     }
 }
 
@@ -609,15 +604,22 @@ private struct ModelListView: View {
                     )
                     : model.runtimeStatus)
                 .accessibilityHint("选择以查看模型详情")
+                .accessibilityIdentifier("model.row.\(model.id)")
             }
         }
-        .navigationTitle("模型")
     }
 }
 
 private struct ModelDetailView: View {
     let model: TTSModelSnapshot
-    let makeDefault: () -> Void
+    @Bindable var store: LibraryPresentationStore
+    @State private var voiceSearch = ""
+
+    private var filteredVoices: [TTSVoiceDescriptor] {
+        voiceSearch.isEmpty ? model.voices : model.voices.filter {
+            $0.displayName.localizedStandardContains(voiceSearch) || $0.id.localizedStandardContains(voiceSearch)
+        }
+    }
 
     var body: some View {
         Form {
@@ -627,6 +629,7 @@ private struct ModelDetailView: View {
                 LabeledContent("框架", value: model.framework)
                 LabeledContent("运行时", value: model.runtimeStatus)
                 LabeledContent("支持语言", value: model.languages)
+                LabeledContent("版本", value: model.version)
             } header: {
                 Label("模型信息", systemImage: "waveform")
             }
@@ -635,22 +638,85 @@ private struct ModelDetailView: View {
                     Label("当前默认模型", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 } else if model.isAvailable {
-                    Button("设为默认", action: makeDefault)
+                    Button("设为默认") { store.makeSelectedModelDefault() }
                 } else {
-                    Text("运行时尚未提供此模型")
+                    Text("安装并验证模型后即可设为默认")
                         .foregroundStyle(.secondary)
                 }
             }
-            Section("语音参数") {
-                LabeledContent("音色", value: "模型默认")
-                LabeledContent("语速", value: "模型默认")
-                Text("自定义语音参数将在后续版本提供。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if model.id == TTSModelCatalog.kokoroID {
+                Section("模型文件") {
+                    if model.installation == .downloading || model.installation == .verifying || model.installation == .installing {
+                        ProgressView(value: model.downloadProgress) {
+                            Text(model.runtimeStatus)
+                        } currentValueLabel: {
+                            Text(model.downloadProgress, format: .percent.precision(.fractionLength(0)))
+                        }
+                        Button("取消", role: .cancel) { store.cancelModelInstall() }
+                    } else if model.installation == .installed {
+                        Label("已安装到 Application Support", systemImage: "checkmark.seal.fill")
+                            .foregroundStyle(.green)
+                    } else {
+                        if let bytes = model.downloadSize {
+                            Text("下载大小：\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))。模型不会编译进 App。")
+                                .foregroundStyle(.secondary)
+                        }
+                        Button(model.installation == .failed || model.installation == .corrupted ? "重新下载" : "下载模型") {
+                            store.installSelectedModel()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("model.download")
+                        if let failure = model.failureMessage { Text(failure).foregroundStyle(.red) }
+                    }
+                }
+            }
+            if model.isAvailable && !model.voices.isEmpty {
+                Section("音色") {
+                    TextField("搜索音色", text: $voiceSearch)
+                        .accessibilityIdentifier("voice.search")
+                    Picker("选择音色", selection: Binding(
+                        get: { model.selectedVoiceID ?? model.voices[0].id },
+                        set: { store.selectVoice($0) }
+                    )) {
+                        ForEach(filteredVoices) { voice in
+                            Text(voice.displayName).tag(voice.id)
+                        }
+                    }
+                    .accessibilityIdentifier("voice.picker")
+                    Button(store.isPreviewing ? "停止试听" : "试听音色", systemImage: store.isPreviewing ? "stop.fill" : "play.fill") {
+                        store.toggleVoicePreview()
+                    }
+                    .accessibilityIdentifier("voice.preview")
+                    .disabled(store.activeCount > 0)
+                    if store.activeCount > 0 {
+                        Text("正式转换正在使用语音运行时，完成或暂停后可试听。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let error = store.importErrorMessage {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .accessibilityIdentifier("voice.preview.error")
+                    }
+                }
+            } else if model.id == TTSModelCatalog.systemID {
+                Section("语音参数") {
+                    Text("Apple 系统语音会根据书籍语言使用 macOS 中已安装的音色。")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Section("许可") {
+                Link("sherpa-onnx · Apache-2.0", destination: URL(string: "https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.2/LICENSE")!)
+                Link("ONNX Runtime · MIT", destination: URL(string: "https://github.com/microsoft/onnxruntime/blob/v1.24.4/LICENSE")!)
+                if model.id == TTSModelCatalog.kokoroID {
+                    Link("Kokoro 模型与随包资源许可", destination: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models")!)
+                    if model.installation == .installed {
+                        Button("打开已安装模型的 LICENSE") { store.openSelectedModelLicense() }
+                    }
+                }
             }
         }
         .formStyle(.grouped)
-        .navigationTitle(model.name)
         .padding()
     }
 }
@@ -693,6 +759,44 @@ private struct QueueStatusBar: View {
             .background(.bar)
             .accessibilityElement(children: .contain)
         }
+    }
+}
+
+private struct ExportProgressDialog: View {
+    @Bindable var store: LibraryPresentationStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label("正在导出有声书", systemImage: "square.and.arrow.up")
+                .font(.headline)
+
+            if let currentFile = store.exportCurrentFile {
+                Text(currentFile)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            ProgressView(value: store.exportProgress)
+                .accessibilityLabel("导出进度")
+                .accessibilityValue(store.exportProgress.formatted(.percent))
+
+            HStack {
+                Text(store.exportProgress, format: .percent.precision(.fractionLength(0)))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+                Spacer()
+                Button("取消导出", role: .cancel) {
+                    store.cancelExport()
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 300)
+        .interactiveDismissDisabled()
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("export.progressDialog")
     }
 }
 

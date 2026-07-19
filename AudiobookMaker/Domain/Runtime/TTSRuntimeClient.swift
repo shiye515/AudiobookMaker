@@ -9,6 +9,8 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
     let recommendedConcurrency: Int
     let supportsImmediateCancellation: Bool
     let outputFileType: String
+    let supportedLanguages: [String]
+    let voices: [TTSVoiceDescriptor]
 
     init(
         runtimeID: String,
@@ -17,7 +19,9 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
         maximumTextLength: Int,
         recommendedConcurrency: Int = 1,
         supportsImmediateCancellation: Bool,
-        outputFileType: String = "caf"
+        outputFileType: String = "caf",
+        supportedLanguages: [String] = [],
+        voices: [TTSVoiceDescriptor] = []
     ) {
         self.runtimeID = runtimeID
         self.displayName = displayName
@@ -26,7 +30,14 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
         self.recommendedConcurrency = recommendedConcurrency
         self.supportsImmediateCancellation = supportsImmediateCancellation
         self.outputFileType = outputFileType
+        self.supportedLanguages = supportedLanguages
+        self.voices = voices
     }
+}
+
+nonisolated enum SynthesisPurpose: String, Codable, Equatable, Sendable {
+    case conversion
+    case preview
 }
 
 nonisolated struct SynthesisRequest: Equatable, Sendable {
@@ -35,19 +46,28 @@ nonisolated struct SynthesisRequest: Equatable, Sendable {
     let languageCode: String?
     let voiceIdentifier: String?
     let outputURL: URL
+    let modelID: String
+    let modelVersion: String
+    let purpose: SynthesisPurpose
 
     init(
         requestID: UUID = UUID(),
         text: String,
         languageCode: String? = nil,
         voiceIdentifier: String? = nil,
-        outputURL: URL
+        outputURL: URL,
+        modelID: String = "com.audiobookmaker.apple-system-speech",
+        modelVersion: String = "system",
+        purpose: SynthesisPurpose = .conversion
     ) {
         self.requestID = requestID
         self.text = text
         self.languageCode = languageCode
         self.voiceIdentifier = voiceIdentifier
         self.outputURL = outputURL
+        self.modelID = modelID
+        self.modelVersion = modelVersion
+        self.purpose = purpose
     }
 }
 
@@ -134,6 +154,15 @@ nonisolated enum RuntimeError: Error, StableAppError, Equatable, Sendable {
 
 protocol TTSRuntimeClient: Sendable {
     func capabilities() async throws -> RuntimeCapabilities
+    func capabilities(for modelID: String) async throws -> RuntimeCapabilities
     func synthesize(_ request: SynthesisRequest) async throws -> SynthesisResult
     func cancel(requestID: UUID) async
+}
+
+extension TTSRuntimeClient {
+    func capabilities(for modelID: String) async throws -> RuntimeCapabilities {
+        // Single-runtime adapters and deterministic test doubles do not route by
+        // catalog ID. Multi-model routers override this method and validate IDs.
+        try await capabilities()
+    }
 }

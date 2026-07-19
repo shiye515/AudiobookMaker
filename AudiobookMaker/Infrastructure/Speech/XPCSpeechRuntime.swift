@@ -57,6 +57,44 @@ nonisolated private func ignoreXPCError(_: any Error) {}
     func cancel(_ requestID: NSUUID, withReply reply: @escaping () -> Void)
 }
 
+nonisolated enum TTSXPCInterfaceFactory {
+    static func make() -> NSXPCInterface {
+        let interface = NSXPCInterface(with: TTSXPCServiceProtocol.self)
+        interface.setClasses(
+            secureClasses([XPCHandshakeReply.self, NSString.self]),
+            for: NSSelectorFromString("handshakeWithReply:"),
+            argumentIndex: 0,
+            ofReply: true
+        )
+        interface.setClasses(
+            secureClasses([XPCSynthesisRequestDTO.self, NSUUID.self, NSString.self]),
+            for: NSSelectorFromString("synthesize:withReply:"),
+            argumentIndex: 0,
+            ofReply: false
+        )
+        interface.setClasses(
+            secureClasses([XPCSynthesisReplyDTO.self, NSUUID.self, NSString.self]),
+            for: NSSelectorFromString("synthesize:withReply:"),
+            argumentIndex: 0,
+            ofReply: true
+        )
+        interface.setClasses(
+            secureClasses([NSUUID.self]),
+            for: NSSelectorFromString("cancel:withReply:"),
+            argumentIndex: 0,
+            ofReply: false
+        )
+        return interface
+    }
+
+    /// Foundation imports this Objective-C API as `Set<AnyHashable>` even
+    /// though its elements are Class objects. Bridge through NSSet to preserve
+    /// those class objects without broadening the list to NSObject.
+    private static func secureClasses(_ classes: [AnyClass]) -> Set<AnyHashable> {
+        NSSet(array: classes) as! Set<AnyHashable>
+    }
+}
+
 nonisolated final class XPCHandshakeReply: NSObject, NSSecureCoding, @unchecked Sendable {
     static var supportsSecureCoding: Bool { true }
     let protocolVersion: Int
@@ -228,7 +266,7 @@ final class XPCSpeechRuntimeClient: TTSRuntimeClient {
         self.directories = directories
         self.expectedRuntimeID = expectedRuntimeID
         self.timeout = timeout
-        connection.remoteObjectInterface = NSXPCInterface(with: TTSXPCServiceProtocol.self)
+        connection.remoteObjectInterface = TTSXPCInterfaceFactory.make()
         connection.resume()
     }
 

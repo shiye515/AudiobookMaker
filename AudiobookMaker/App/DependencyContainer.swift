@@ -14,6 +14,7 @@ final class DependencyContainer {
     let loggingService: any ApplicationLogging
     let importer: ImportCoordinator
     let runtime: any TTSRuntimeClient
+    let modelManager: ModelPackageManager
     let converter: ConversionCoordinator
     let exporter: ExportCoordinator
     let recovery: RecoveryCoordinator
@@ -25,11 +26,29 @@ final class DependencyContainer {
         runtime runtimeOverride: (any TTSRuntimeClient)? = nil
     ) throws {
         let schema = AudiobookMakerSchema.schema
-        let configuration = ModelConfiguration(
-            "AudiobookMaker-v1",
-            schema: schema,
-            isStoredInMemoryOnly: inMemory
-        )
+        let configuration: ModelConfiguration
+        if !inMemory, let rootOverride {
+            let persistenceDirectory = rootOverride.appending(
+                path: "Persistence",
+                directoryHint: .isDirectory
+            )
+            try FileManager.default.createDirectory(
+                at: persistenceDirectory,
+                withIntermediateDirectories: true
+            )
+            configuration = ModelConfiguration(
+                "AudiobookMaker-v1",
+                schema: schema,
+                url: persistenceDirectory.appending(path: "AudiobookMaker.store"),
+                cloudKitDatabase: .none
+            )
+        } else {
+            configuration = ModelConfiguration(
+                "AudiobookMaker-v1",
+                schema: schema,
+                isStoredInMemoryOnly: inMemory
+            )
+        }
         self.modelContainer = try ModelContainer(for: schema, configurations: [configuration])
         if let rootOverride {
             self.directories = AppDirectories(
@@ -40,10 +59,6 @@ final class DependencyContainer {
         } else {
             self.directories = try AppDirectories.live()
         }
-        try FileManager.default.createDirectory(
-            at: directories.modelDirectory(id: LibraryRepository.cosyVoiceID),
-            withIntermediateDirectories: true
-        )
         self.repository = LibraryRepository(modelContainer: modelContainer)
         self.persistenceService = repository
         self.fileStorageService = directories
@@ -56,7 +71,18 @@ final class DependencyContainer {
             parser: epubService,
             logger: loggingService
         )
-        self.runtime = runtimeOverride ?? SystemSpeechRuntimeClient()
+        let runtime = runtimeOverride ?? RoutingTTSRuntimeClient(directories: directories)
+        self.runtime = runtime
+        self.modelManager = ModelPackageManager(
+            directories: directories,
+            eventHandler: { [repository] event in
+                try? await repository.updateModelInstallState(id: TTSModelCatalog.kokoroID, event: event)
+            },
+            runtimeProbe: { manifest in
+                let capabilities = try await runtime.capabilities(for: manifest.id)
+                guard capabilities.version == manifest.version else { throw RuntimeError.incompatibleRuntime }
+            }
+        )
         self.converter = ConversionCoordinator(
             repository: repository,
             directories: directories,
@@ -67,7 +93,6 @@ final class DependencyContainer {
         self.exporter = ExportCoordinator(
             repository: repository,
             directories: directories,
-            writer: archiveService,
             logger: loggingService
         )
         self.recovery = RecoveryCoordinator(repository: repository, directories: directories)

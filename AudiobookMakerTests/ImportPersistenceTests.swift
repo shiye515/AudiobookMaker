@@ -98,8 +98,8 @@ struct ImportPersistenceTests {
     @Test("Deleted managed data can be restored in the current session")
     @MainActor
     func deletionUndoReimportsTrashCopyAndProtectsOriginal() async throws {
-        let originalURL = FileManager.default.homeDirectoryForCurrentUser
-            .appending(path: "Downloads/李光耀论中国与世界_李光耀.epub")
+        guard let path = ProcessInfo.processInfo.environment["AUDIOBOOKMAKER_REAL_EPUB"] else { return }
+        let originalURL = URL(filePath: path)
         guard FileManager.default.fileExists(atPath: originalURL.path) else { return }
         let originalHash = try SHA256Hasher.hashFile(at: originalURL)
         let root = try temporaryDirectory()

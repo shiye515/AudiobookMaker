@@ -7,7 +7,8 @@ extension Notification.Name {
     static let pauseConversion = Notification.Name("AudiobookMaker.pauseConversion")
     static let deleteSelectedBook = Notification.Name("AudiobookMaker.deleteSelectedBook")
     static let exportSelectedBook = Notification.Name("AudiobookMaker.exportSelectedBook")
-    static let focusBookSearch = Notification.Name("AudiobookMaker.focusBookSearch")
+    static let selectSystemModel = Notification.Name("AudiobookMaker.selectSystemModel")
+    static let selectKokoroModel = Notification.Name("AudiobookMaker.selectKokoroModel")
 }
 
 struct AppCommands: Commands {
@@ -24,13 +25,6 @@ struct AppCommands: Commands {
             Button("显示转换队列") {
                 post(.showConversionQueue)
             }
-        }
-
-        CommandGroup(after: .textEditing) {
-            Button("搜索书籍") {
-                post(.focusBookSearch)
-            }
-            .keyboardShortcut("f", modifiers: .command)
         }
 
         CommandMenu("Book") {
@@ -55,6 +49,13 @@ struct AppCommands: Commands {
                 post(.deleteSelectedBook)
             }
             .keyboardShortcut(.delete, modifiers: [])
+        }
+
+        CommandMenu("Model") {
+            Button("Apple 系统语音") { post(.selectSystemModel) }
+            Button("Kokoro 多语言 Int8") { post(.selectKokoroModel) }
+            Divider()
+            SettingsLink { Text("模型设置…") }
         }
     }
 

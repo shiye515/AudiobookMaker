@@ -5,6 +5,7 @@ nonisolated struct ParsedEPUB: Sendable, Equatable {
     let title: String
     let author: String?
     let language: String?
+    let publicationDate: Date?
     let chapters: [ParsedEPUBChapter]
     let coverData: Data?
     let coverExtension: String?
@@ -134,6 +135,7 @@ nonisolated struct EPUBParser: Sendable {
                 ?? url.deletingPathExtension().lastPathComponent,
             author: packageDelegate.author?.trimmedNonEmpty,
             language: packageDelegate.language?.trimmedNonEmpty,
+            publicationDate: packageDelegate.publicationDate,
             chapters: chapters,
             coverData: coverData,
             coverExtension: coverExtension
@@ -246,6 +248,7 @@ nonisolated private final class PackageDocumentDelegate: NSObject, XMLParserDele
     var title: String?
     var author: String?
     var language: String?
+    var publicationDate: Date?
     var manifest: [String: ManifestItem] = [:]
     var spine: [String] = []
     private var coverID: String?
@@ -265,7 +268,7 @@ nonisolated private final class PackageDocumentDelegate: NSObject, XMLParserDele
         attributes attributeDict: [String: String] = [:]
     ) {
         let name = epubLocalName(elementName, qName)
-        if ["title", "creator", "language"].contains(name) {
+        if ["title", "creator", "language", "date"].contains(name) {
             textTarget = name
             textBuffer = ""
         } else if name == "item", let id = attributeDict["id"], let href = attributeDict["href"] {
@@ -298,7 +301,24 @@ nonisolated private final class PackageDocumentDelegate: NSObject, XMLParserDele
         if name == "title", title == nil { title = value }
         if name == "creator", author == nil { author = value }
         if name == "language", language == nil { language = value }
+        if name == "date", publicationDate == nil {
+            publicationDate = Self.parsePublicationDate(value)
+        }
         textTarget = nil
+    }
+
+    private static func parsePublicationDate(_ value: String) -> Date? {
+        let iso8601 = ISO8601DateFormatter()
+        if let date = iso8601.date(from: value) { return date }
+        iso8601.formatOptions = [.withFullDate]
+        if let date = iso8601.date(from: value) { return date }
+
+        let year = DateFormatter()
+        year.locale = Locale(identifier: "en_US_POSIX")
+        year.calendar = Calendar(identifier: .gregorian)
+        year.timeZone = TimeZone(secondsFromGMT: 0)
+        year.dateFormat = "yyyy"
+        return year.date(from: value)
     }
 }
 

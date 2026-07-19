@@ -12,7 +12,14 @@
       }
     },
     "“%@”的内容与已有书籍相同。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“%@” has the same content as an existing book."
+          }
+        }
+      }
     },
     "“%arg”的内容与已有书籍相同。" : {
       "extractionState" : "stale",
@@ -392,6 +399,7 @@
       }
     },
     "Apple 系统语音 · 本机运行" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -401,7 +409,18 @@
         }
       }
     },
+    "Apple 系统语音会根据书籍语言使用 macOS 中已安装的音色。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apple system speech uses voices installed in macOS based on the book's language."
+          }
+        }
+      }
+    },
     "AudiobookMaker" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -427,34 +446,13 @@
         }
       }
     },
-    "CosyVoice3 0.5B" : {
+    "Hello. This is a local voice preview from AudiobookMaker." : {
       "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "CosyVoice3 0.5B"
-          }
-        }
-      }
-    },
-    "CosyVoice3 0.5B · 本机运行" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CosyVoice3 0.5B · On-device"
-          }
-        }
-      }
-    },
-    "CosyVoice3 0.5B（需要 Apple Silicon）" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "CosyVoice3 0.5B (Apple Silicon required)"
+            "value" : "Hello. This is a local voice preview from AudiobookMaker."
           }
         }
       }
@@ -472,6 +470,46 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "导入 EPUB"
+          }
+        }
+      }
+    },
+    "Kokoro 在 Intel 与 Apple 芯片上都使用 CPU 推理，并会将并发限制为 1。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kokoro uses CPU inference on both Intel and Apple silicon and limits concurrency to 1."
+          }
+        }
+      }
+    },
+    "Kokoro 多语言 Int8" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kokoro Multilingual Int8"
+          }
+        }
+      }
+    },
+    "Kokoro 模型与随包资源许可" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kokoro Model and Bundled Resource Licenses"
+          }
+        }
+      }
+    },
+    "Kokoro 模型需在“模型”页面单独下载；权重不包含在 App 中。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download the Kokoro model separately from the Models page; model weights are not included in the app."
           }
         }
       }
@@ -506,6 +544,36 @@
         }
       }
     },
+    "Model" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model"
+          }
+        }
+      }
+    },
+    "ONNX Runtime · MIT" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "ONNX Runtime · MIT"
+          }
+        }
+      }
+    },
+    "sherpa-onnx · Apache-2.0" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "sherpa-onnx · Apache-2.0"
+          }
+        }
+      }
+    },
     "unknown.author" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -519,6 +587,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "未知作者"
+          }
+        }
+      }
+    },
+    "下载大小：%@。模型不会编译进 App。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download size: %1$@. The model is not compiled into the app."
+          }
+        }
+      }
+    },
+    "下载模型" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download Model"
           }
         }
       }
@@ -603,12 +691,33 @@
         }
       }
     },
+    "你好，这是 AudiobookMaker 的本地音色试听。今天是二〇二六年七月十九日。" : {
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Hello. This is a local voice preview from AudiobookMaker. Today is July 19, 2026."
+          }
+        }
+      }
+    },
     "保留中间 PCM 文件" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Keep intermediate PCM files"
+          }
+        }
+      }
+    },
+    "停止试听" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Stop Preview"
           }
         }
       }
@@ -634,6 +743,7 @@
       }
     },
     "关闭时，验证成功后会清理中间音频文件。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -794,6 +904,26 @@
         }
       }
     },
+    "安装失败" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installation Failed"
+          }
+        }
+      }
+    },
+    "安装并验证模型后即可设为默认" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install and verify the model to set it as the default"
+          }
+        }
+      }
+    },
     "完成" : {
       "localizations" : {
         "en" : {
@@ -814,6 +944,9 @@
           }
         }
       }
+    },
+    "导入" : {
+
     },
     "导入 EPUB" : {
       "localizations" : {
@@ -855,6 +988,9 @@
         }
       }
     },
+    "导入中" : {
+
+    },
     "导入结果无法提交到资料库。" : {
       "localizations" : {
         "en" : {
@@ -876,7 +1012,14 @@
       }
     },
     "导出完成：%@" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Export complete: %@"
+          }
+        }
+      }
     },
     "导出有声书…" : {
       "localizations" : {
@@ -888,12 +1031,12 @@
         }
       }
     },
-    "导出的 ZIP 未通过完整性校验。" : {
+    "导出的 M4B 未通过完整性校验。" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "The exported ZIP failed integrity validation."
+            "value" : "The exported M4B failed integrity validation."
           }
         }
       }
@@ -939,7 +1082,14 @@
       }
     },
     "已删除“%@”" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Deleted “%@”"
+          }
+        }
+      }
     },
     "已删除“%arg”" : {
       "extractionState" : "stale",
@@ -958,6 +1108,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Queued"
+          }
+        }
+      }
+    },
+    "已安装到 Application Support" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installed in Application Support"
           }
         }
       }
@@ -1065,16 +1225,6 @@
         }
       }
     },
-    "当前 Intel Mac 使用 AVFoundation 系统语音；CosyVoice 需要 Apple Silicon 运行时。" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "This Intel Mac uses AVFoundation system voices. CosyVoice requires an Apple Silicon runtime."
-          }
-        }
-      }
-    },
     "当前设备不可用" : {
       "localizations" : {
         "en" : {
@@ -1086,6 +1236,7 @@
       }
     },
     "当前转换进度" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1106,6 +1257,7 @@
       }
     },
     "我的书籍" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1125,7 +1277,18 @@
         }
       }
     },
+    "打开已安装模型的 LICENSE" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Installed Model LICENSE"
+          }
+        }
+      }
+    },
     "打开当前排队和转换中的书籍列表" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1173,6 +1336,7 @@
       }
     },
     "搜索书名或作者" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1183,7 +1347,25 @@
       }
     },
     "搜索书籍" : {
-
+      "extractionState" : "stale",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search Books"
+          }
+        }
+      }
+    },
+    "搜索音色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Search Voices"
+          }
+        }
+      }
     },
     "撤销" : {
       "localizations" : {
@@ -1346,7 +1528,24 @@
       }
     },
     "更多操作" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More Actions"
+          }
+        }
+      }
+    },
+    "有声书" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Audiobook"
+          }
+        }
+      }
     },
     "未加载" : {
       "localizations" : {
@@ -1377,6 +1576,9 @@
           }
         }
       }
+    },
+    "本机运行" : {
+
     },
     "查看模型框架、运行状态和能力。" : {
       "localizations" : {
@@ -1438,6 +1640,56 @@
         }
       }
     },
+    "模型已损坏" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model Corrupted"
+          }
+        }
+      }
+    },
+    "模型文件" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model Files"
+          }
+        }
+      }
+    },
+    "模型设置…" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Model Settings…"
+          }
+        }
+      }
+    },
+    "正在下载" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Downloading"
+          }
+        }
+      }
+    },
+    "正在安装" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Installing"
+          }
+        }
+      }
+    },
     "正在导入 EPUB" : {
       "localizations" : {
         "en" : {
@@ -1454,6 +1706,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Exporting Audiobook"
+          }
+        }
+      }
+    },
+    "正在校验" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Verifying"
           }
         }
       }
@@ -1478,12 +1740,32 @@
         }
       }
     },
+    "正式转换正在使用语音运行时，完成或暂停后可试听。" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "The voice runtime is in use for conversion. Preview after conversion finishes or is paused."
+          }
+        }
+      }
+    },
     "没有可封装的语音片段。" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "There are no audio segments to package."
+          }
+        }
+      }
+    },
+    "版本" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Version"
           }
         }
       }
@@ -1509,6 +1791,9 @@
         }
       }
     },
+    "第 %lld 章转换进度" : {
+
+    },
     "等待开始" : {
       "localizations" : {
         "en" : {
@@ -1520,6 +1805,7 @@
       }
     },
     "筛选" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1540,11 +1826,22 @@
       }
     },
     "自定义语音参数将在后续版本提供。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
             "value" : "Custom voice parameters will be available in a future version."
+          }
+        }
+      }
+    },
+    "许可" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Licenses"
           }
         }
       }
@@ -1559,7 +1856,18 @@
         }
       }
     },
+    "试听音色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Preview Voice"
+          }
+        }
+      }
+    },
     "语速" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1881,6 +2189,7 @@
       }
     },
     "运行时可根据模型能力进一步降低并发数。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1891,6 +2200,7 @@
       }
     },
     "运行时尚未提供此模型" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1966,6 +2276,26 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Select to view chapters and conversion actions"
+          }
+        }
+      }
+    },
+    "选择音色" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Select Voice"
+          }
+        }
+      }
+    },
+    "重新下载" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Download Again"
           }
         }
       }

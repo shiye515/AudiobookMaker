@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Observation
 import SwiftUI
 import UniformTypeIdentifiers
@@ -98,6 +99,7 @@ struct ChapterSnapshot: Identifiable {
     let title: String
     let duration: String?
     var status: BookPresentationStatus
+    var progress: Double? = nil
 }
 
 struct BookSnapshot: Identifiable {
@@ -113,6 +115,7 @@ struct BookSnapshot: Identifiable {
     var coverURL: URL?
     var coverColor: Color
     var coverSymbol: String
+    var modelID: String? = nil
 
     var shortTitle: String {
         title.count > 7 ? String(title.prefix(7)) : title
@@ -127,6 +130,13 @@ struct TTSModelSnapshot: Identifiable {
     let languages: String
     let isAvailable: Bool
     var isDefault: Bool
+    let version: String
+    let installation: ModelInstallationState
+    let downloadProgress: Double
+    let failureMessage: String?
+    let downloadSize: Int64?
+    var selectedVoiceID: String?
+    let voices: [TTSVoiceDescriptor]
 }
 
 struct DuplicateImportPrompt: Identifiable {
@@ -163,6 +173,7 @@ final class LibraryPresentationStore {
     var exportProgress = 0.0
     var exportCurrentFile: String?
     var lastExportedFileName: String?
+    var isPreviewing = false
 
     private let repository: LibraryRepository?
     private let importer: ImportCoordinator?
@@ -171,9 +182,15 @@ final class LibraryPresentationStore {
     private let exporter: ExportCoordinator?
     private let recovery: RecoveryCoordinator?
     private let trash: TrashCoordinator?
+    private let modelManager: ModelPackageManager?
+    private let runtime: (any TTSRuntimeClient)?
     private var hasLoaded = false
     private var deletionCleanupTask: Task<Void, Never>?
     private var exportTask: Task<Void, Never>?
+    private var exportCompletionDismissTask: Task<Void, Never>?
+    private var modelTask: Task<Void, Never>?
+    private var previewPlayer: AVAudioPlayer?
+    private var previewURL: URL?
 
     init(mode: Mode = .populated) {
         repository = nil
@@ -183,6 +200,8 @@ final class LibraryPresentationStore {
         exporter = nil
         recovery = nil
         trash = nil
+        modelManager = nil
+        runtime = nil
         var initialBooks = mode == .empty ? [] : Self.previewBooks
         if !initialBooks.isEmpty {
             switch mode {
@@ -215,6 +234,8 @@ final class LibraryPresentationStore {
         exporter = dependencies.exporter
         recovery = dependencies.recovery
         trash = dependencies.trash
+        modelManager = dependencies.modelManager
+        runtime = dependencies.runtime
         books = []
         models = Self.liveModels
         selectedModelID = models.first?.id
@@ -249,10 +270,19 @@ final class LibraryPresentationStore {
     var activeCount: Int { books.count { $0.status == .converting } }
     var completedCount: Int { books.count { $0.status == .completed } }
 
+    func modelLabel(for book: BookSnapshot) -> String {
+        let modelID = book.modelID ?? models.first(where: \.isDefault)?.id
+        let name = models.first(where: { $0.id == modelID })?.name
+            ?? (modelID == TTSModelCatalog.kokoroID
+                ? TTSModelCatalog.kokoro.displayName
+                : String(localized: "Apple 系统语音"))
+        return "\(name) · \(String(localized: "本机运行"))"
+    }
+
     func performPrimaryBookAction() {
         guard let index = books.firstIndex(where: { $0.id == selectedBookID }) else { return }
         switch books[index].status {
-        case .ready, .failed, .paused:
+        case .ready, .failed:
             books[index].status = .converting
             guard let converter else { return }
             let bookID = books[index].id
@@ -260,9 +290,21 @@ final class LibraryPresentationStore {
                 await converter.start(bookID: bookID)
                 repeat {
                     try? await Task.sleep(for: .milliseconds(350))
-                    await reloadBooks(selecting: bookID)
+                    await reloadBooks(selecting: nil)
                 } while await converter.isActive(bookID: bookID)
-                await reloadBooks(selecting: bookID)
+                await reloadBooks(selecting: nil)
+            }
+        case .paused:
+            books[index].status = .converting
+            guard let converter else { return }
+            let bookID = books[index].id
+            Task {
+                await converter.resume(bookID: bookID)
+                repeat {
+                    try? await Task.sleep(for: .milliseconds(350))
+                    await reloadBooks(selecting: nil)
+                } while await converter.isActive(bookID: bookID)
+                await reloadBooks(selecting: nil)
             }
         case .queued:
             books[index].status = .ready
@@ -270,7 +312,7 @@ final class LibraryPresentationStore {
                 let bookID = books[index].id
                 Task {
                     await converter.cancelQueued(bookID: bookID)
-                    await reloadBooks(selecting: bookID)
+                    await reloadBooks(selecting: nil)
                 }
             }
         case .converting:
@@ -279,7 +321,7 @@ final class LibraryPresentationStore {
                 let bookID = books[index].id
                 Task {
                     await converter.pause(bookID: bookID)
-                    await reloadBooks(selecting: bookID)
+                    await reloadBooks(selecting: nil)
                 }
             }
         case .completed:
@@ -295,7 +337,7 @@ final class LibraryPresentationStore {
             let bookID = books[index].id
             Task {
                 await converter.pause(bookID: bookID)
-                await reloadBooks(selecting: bookID)
+                await reloadBooks(selecting: nil)
             }
         }
     }
@@ -370,6 +412,97 @@ final class LibraryPresentationStore {
         }
     }
 
+    func installSelectedModel() {
+        guard selectedModelID == TTSModelCatalog.kokoroID, let modelManager else { return }
+        modelTask?.cancel()
+        modelTask = Task {
+            let refresh = Task { @MainActor [weak self] in
+                while !Task.isCancelled {
+                    await self?.reloadModels()
+                    try? await Task.sleep(for: .milliseconds(200))
+                }
+            }
+            defer { refresh.cancel() }
+            do { try await modelManager.install() }
+            catch ModelPackageError.cancelled { }
+            catch { importErrorMessage = error.localizedDescription }
+            await reloadModels()
+            modelTask = nil
+        }
+    }
+
+    func cancelModelInstall() {
+        guard let modelManager else { return }
+        Task { await modelManager.cancel() }
+    }
+
+    func selectVoice(_ voiceID: String) {
+        guard let selectedModelID, let repository else { return }
+        Task {
+            do {
+                try await repository.setVoice(modelID: selectedModelID, voiceID: voiceID)
+                importErrorMessage = nil
+                await reloadModels()
+            } catch { importErrorMessage = error.localizedDescription }
+        }
+    }
+
+    func toggleVoicePreview() {
+        if isPreviewing { stopVoicePreview(); return }
+        guard activeCount == 0, let model = selectedModel, model.isAvailable,
+              let runtime, let directories else { return }
+        stopVoicePreview()
+        let voice = model.voices.first(where: { $0.id == model.selectedVoiceID })
+        // Keep preview text in the selected voice's language and within Kokoro's
+        // known lexicon. The product name produces the unsupported English `ɚ`
+        // phoneme, while `〇` is converted to Kokoro's unknown-token marker.
+        let sample = voice?.languageCode == "en-US"
+            ? "Hello. This is a local voice sample."
+            : "你好，这是本地音色试听。"
+        let url = directories.cacheRoot.appending(path: "VoicePreview-\(UUID().uuidString).caf")
+        isPreviewing = true
+        previewURL = url
+        Task {
+            do {
+                _ = try await runtime.synthesize(SynthesisRequest(
+                    text: sample,
+                    languageCode: voice?.languageCode,
+                    voiceIdentifier: voice?.id,
+                    outputURL: url,
+                    modelID: model.id,
+                    modelVersion: model.version,
+                    purpose: .preview
+                ))
+                guard isPreviewing else { try? FileManager.default.removeItem(at: url); return }
+                let player = try AVAudioPlayer(contentsOf: url)
+                previewPlayer = player
+                guard player.prepareToPlay(), player.play() else { throw RuntimeError.invalidAudio }
+                let playbackMilliseconds = Int64((player.duration + 0.25) * 1_000)
+                try await Task.sleep(for: .milliseconds(playbackMilliseconds))
+                guard previewURL == url, previewPlayer === player else { return }
+                stopVoicePreview()
+            } catch is CancellationError {
+                guard previewURL == url else { return }
+                stopVoicePreview()
+            } catch { importErrorMessage = error.localizedDescription; stopVoicePreview() }
+        }
+    }
+
+    func stopVoicePreview() {
+        previewPlayer?.stop(); previewPlayer = nil; isPreviewing = false
+        if let previewURL { try? FileManager.default.removeItem(at: previewURL) }
+        previewURL = nil
+    }
+
+    func openSelectedModelLicense() {
+        guard let directories, let model = selectedModel,
+              model.id == TTSModelCatalog.kokoroID,
+              let root = try? directories.modelVersionDirectory(id: model.id, version: model.version) else { return }
+        let license = root.appending(path: "LICENSE")
+        guard FileManager.default.fileExists(atPath: license.path) else { return }
+        NSWorkspace.shared.open(license)
+    }
+
     func exportSelectedBook() {
         guard let book = selectedBook, book.status == .completed else { return }
         exportBook(book)
@@ -389,7 +522,7 @@ final class LibraryPresentationStore {
         if ProcessInfo.processInfo.arguments.contains("--uitest-e2e"), let directories {
             beginExport(
                 book: book,
-                to: directories.root.appending(path: "端到端测试有声书.zip"),
+                to: directories.root.appending(path: "端到端测试有声书.m4b"),
                 revealInFinder: false
             )
             return
@@ -397,8 +530,8 @@ final class LibraryPresentationStore {
         let panel = NSSavePanel()
         panel.title = "导出有声书"
         panel.prompt = "导出"
-        panel.nameFieldStringValue = "\(FileNameSanitizer.visibleName(book.title)).zip"
-        panel.allowedContentTypes = [.zip]
+        panel.nameFieldStringValue = "\(FileNameSanitizer.visibleName(book.title)).m4b"
+        panel.allowedContentTypes = [UTType(filenameExtension: "m4b") ?? .mpeg4Audio]
         panel.canCreateDirectories = true
         panel.begin { [weak self] response in
             guard response == .OK, let destination = panel.url else { return }
@@ -411,6 +544,8 @@ final class LibraryPresentationStore {
         isExporting = true
         exportProgress = 0
         exportCurrentFile = nil
+        exportCompletionDismissTask?.cancel()
+        exportCompletionDismissTask = nil
         lastExportedFileName = nil
         exportTask = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -424,7 +559,7 @@ final class LibraryPresentationStore {
                         self?.exportCurrentFile = value.currentFile
                     }
                 }
-                self.lastExportedFileName = exported.lastPathComponent
+                self.showExportCompletion(fileName: exported.lastPathComponent)
                 if revealInFinder {
                     NSWorkspace.shared.activateFileViewerSelecting([exported])
                 }
@@ -440,11 +575,51 @@ final class LibraryPresentationStore {
         }
     }
 
+    private func showExportCompletion(fileName: String) {
+        exportCompletionDismissTask?.cancel()
+        lastExportedFileName = fileName
+        exportCompletionDismissTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(4))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            self?.lastExportedFileName = nil
+            self?.exportCompletionDismissTask = nil
+        }
+    }
+
     func load() async {
         guard !hasLoaded, let repository else { return }
         hasLoaded = true
         do {
             try await repository.seedDefaults()
+            if let modelManager {
+                try await modelManager.recoverStaging()
+                let persistedModels = try await repository.models()
+                if persistedModels.first(where: { $0.id == TTSModelCatalog.kokoroID })?.installation == .installed {
+                    do {
+                        _ = try await modelManager.validate()
+                    } catch {
+                        try await repository.updateModelInstallState(
+                            id: TTSModelCatalog.kokoroID,
+                            event: .init(state: .corrupted, progress: 0, message: error.localizedDescription)
+                        )
+                    }
+                }
+            }
+            if ProcessInfo.processInfo.arguments.contains("--uitest-kokoro-ready") {
+                try await repository.updateModelInstallState(
+                    id: TTSModelCatalog.kokoroID,
+                    event: .init(state: .installed, progress: 1, message: nil)
+                )
+            } else if ProcessInfo.processInfo.arguments.contains("--uitest-model-not-installed") {
+                try await repository.updateModelInstallState(
+                    id: TTSModelCatalog.kokoroID,
+                    event: .init(state: .notInstalled, progress: 0, message: nil)
+                )
+            }
             _ = try await recovery?.recover()
             await reloadModels()
             if ProcessInfo.processInfo.arguments.contains("--uitest-e2e"),
@@ -466,7 +641,7 @@ final class LibraryPresentationStore {
                     if let completed = selectedBook, completed.status == .completed {
                         beginExport(
                             book: completed,
-                            to: directories.root.appending(path: "性能审计有声书.zip"),
+                            to: directories.root.appending(path: "性能审计有声书.m4b"),
                             revealInFinder: false
                         )
                     }
@@ -600,12 +775,20 @@ final class LibraryPresentationStore {
         guard let repository else { return }
         do {
             let snapshots = try await repository.models()
+            // The repository call is an actor hop. Read the selection after it
+            // returns so a click made while the refresh was suspended wins.
+            let currentlySelectedModelID = selectedModelID
             models = snapshots.map { model in
                 let available = model.runtime == .ready
                 let runtimeStatus: String = switch (model.installation, model.runtime) {
                 case (_, .ready): String(localized: "已就绪")
                 case (.notInstalled, _): String(localized: "未安装")
                 case (.installed, .unloaded): String(localized: "未加载")
+                case (.downloading, _): String(localized: "正在下载")
+                case (.verifying, _): String(localized: "正在校验")
+                case (.installing, _): String(localized: "正在安装")
+                case (.failed, _): String(localized: "安装失败")
+                case (.corrupted, _): String(localized: "模型已损坏")
                 default: String(localized: "当前设备不可用")
                 }
                 return TTSModelSnapshot(
@@ -617,30 +800,49 @@ final class LibraryPresentationStore {
                         ? String(localized: "随 macOS 已安装语音")
                         : String(localized: "中文、英文"),
                     isAvailable: available,
-                    isDefault: model.isDefault
+                    isDefault: model.isDefault,
+                    version: model.version,
+                    installation: model.installation,
+                    downloadProgress: model.downloadProgress,
+                    failureMessage: model.failureMessage,
+                    downloadSize: model.downloadSize,
+                    selectedVoiceID: model.selectedVoiceID,
+                    voices: model.id == TTSModelCatalog.kokoroID ? TTSModelCatalog.kokoroVoices : []
                 )
             }
-            selectedModelID = models.first(where: \.isDefault)?.id ?? models.first?.id
+            selectedModelID = models.contains(where: { $0.id == currentlySelectedModelID })
+                ? currentlySelectedModelID
+                : models.first(where: \.isDefault)?.id ?? models.first?.id
         } catch {
             importErrorMessage = error.localizedDescription
         }
     }
 
     private func makePresentationBook(_ snapshot: PersistentBookSnapshot) -> BookSnapshot {
-        let chapters = snapshot.chapters.map { chapter in
-            ChapterSnapshot(
-                id: chapter.id,
-                index: chapter.index + 1,
-                title: chapter.title,
-                duration: chapter.durationSeconds.map(Self.durationString),
-                status: Self.presentationStatus(chapter.status)
-            )
-        }
-        let completed = snapshot.chapters.count { $0.status == .completed }
         let completedCharacters = snapshot.chapters
             .filter { $0.status == .completed }
             .reduce(0) { $0 + $1.characterCount }
         let persistedCompleted = snapshot.jobCompletedUnits ?? Int64(completedCharacters)
+        let activeChapterUnits = max(0, persistedCompleted - Int64(completedCharacters))
+        let chapters = snapshot.chapters.map { chapter in
+            let status = Self.presentationStatus(chapter.status)
+            let chapterProgress: Double? = if status == .converting {
+                chapter.status == .packaging
+                    ? 1
+                    : min(1, Double(activeChapterUnits) / Double(max(1, chapter.characterCount)))
+            } else {
+                nil
+            }
+            return ChapterSnapshot(
+                id: chapter.id,
+                index: chapter.index + 1,
+                title: chapter.title,
+                duration: chapter.durationSeconds.map(Self.durationString),
+                status: status,
+                progress: chapterProgress
+            )
+        }
+        let completed = snapshot.chapters.count { $0.status == .completed }
         let persistedTotal = snapshot.jobTotalUnits ?? snapshot.totalCharacters
         let progress = persistedTotal > 0
             ? min(1, Double(persistedCompleted) / Double(persistedTotal))
@@ -657,7 +859,8 @@ final class LibraryPresentationStore {
             chapters: chapters,
             coverURL: snapshot.coverRelativePath.flatMap { try? directories?.resolve(relativePath: $0) },
             coverColor: .indigo,
-            coverSymbol: "book.closed.fill"
+            coverSymbol: "book.closed.fill",
+            modelID: snapshot.modelID
         )
     }
 
@@ -717,17 +920,18 @@ final class LibraryPresentationStore {
 
     private static let previewModels: [TTSModelSnapshot] = [
         TTSModelSnapshot(
-            id: "aufklarer/CosyVoice3-0.5B-MLX-8bit-full",
-            name: "CosyVoice3 0.5B", framework: "CosyVoice",
-            runtimeStatus: "已就绪", languages: "中文、英文", isAvailable: true, isDefault: true
+            id: TTSModelCatalog.systemID,
+            name: "Apple 系统语音", framework: "AVFoundation",
+            runtimeStatus: "已就绪", languages: "随 macOS 已安装语音", isAvailable: true, isDefault: true,
+            version: "system", installation: .installed, downloadProgress: 1, failureMessage: nil,
+            downloadSize: nil, selectedVoiceID: nil, voices: []
         ),
         TTSModelSnapshot(
-            id: "suno/bark", name: "Bark", framework: "Bark",
-            runtimeStatus: "未安装", languages: "多语言", isAvailable: false, isDefault: false
-        ),
-        TTSModelSnapshot(
-            id: "fishaudio/fish-speech", name: "Fish Speech", framework: "FishSpeech",
-            runtimeStatus: "未安装", languages: "中文、英文", isAvailable: false, isDefault: false
+            id: TTSModelCatalog.kokoroID, name: "Kokoro 多语言 Int8", framework: "sherpa-onnx",
+            runtimeStatus: "未安装", languages: "中文、英文", isAvailable: false, isDefault: false,
+            version: TTSModelCatalog.kokoro.version, installation: .notInstalled, downloadProgress: 0,
+            failureMessage: nil, downloadSize: TTSModelCatalog.kokoro.downloadBytes,
+            selectedVoiceID: "zf_001", voices: TTSModelCatalog.kokoroVoices
         ),
     ]
 
@@ -736,11 +940,16 @@ final class LibraryPresentationStore {
             id: "com.audiobookmaker.apple-system-speech",
             name: "Apple 系统语音", framework: "AVFoundation",
             runtimeStatus: "已就绪", languages: "随 macOS 已安装语音", isAvailable: true, isDefault: true
+            ,version: "system", installation: .installed, downloadProgress: 1, failureMessage: nil,
+            downloadSize: nil, selectedVoiceID: nil, voices: []
         ),
         TTSModelSnapshot(
-            id: "aufklarer/CosyVoice3-0.5B-MLX-8bit-full",
-            name: "CosyVoice3 0.5B", framework: "CosyVoice / MLX",
-            runtimeStatus: "需要 Apple Silicon", languages: "中文、英文", isAvailable: false, isDefault: false
+            id: TTSModelCatalog.kokoroID,
+            name: "Kokoro 多语言 Int8", framework: "sherpa-onnx",
+            runtimeStatus: "未安装", languages: "中文、英文", isAvailable: false, isDefault: false,
+            version: TTSModelCatalog.kokoro.version, installation: .notInstalled, downloadProgress: 0,
+            failureMessage: nil, downloadSize: TTSModelCatalog.kokoro.downloadBytes,
+            selectedVoiceID: "zf_001", voices: TTSModelCatalog.kokoroVoices
         )
     ]
 
@@ -764,7 +973,8 @@ final class LibraryPresentationStore {
                 index: index,
                 title: index <= names.count ? names[index - 1] : "第 \(index) 章",
                 duration: index <= completed ? String(format: "%02d:%02d", 20 + index % 12, index * 7 % 60) : nil,
-                status: status
+                status: status,
+                progress: status == .converting ? 0.42 : nil
             )
         }
     }

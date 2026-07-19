@@ -6,6 +6,13 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B20000000000000000000001 /* SherpaOnnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SherpaOnnx.xcframework */; };
+		B20000000000000000000003 /* OnnxRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* OnnxRuntime.xcframework */; };
+		B20000000000000000000005 /* SherpaOnnx.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SherpaOnnx.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B20000000000000000000006 /* OnnxRuntime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* OnnxRuntime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		A10000000000000000000007 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -24,6 +31,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		B20000000000000000000002 /* SherpaOnnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/SherpaOnnx.xcframework; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000004 /* OnnxRuntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/OnnxRuntime.xcframework; sourceTree = SOURCE_ROOT; };
 		9EAA13D7300B0FDC00749064 /* AudiobookMaker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AudiobookMaker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000001 /* AudiobookMakerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AudiobookMakerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000002 /* AudiobookMakerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AudiobookMakerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -60,11 +69,28 @@
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		B20000000000000000000007 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				B20000000000000000000005 /* SherpaOnnx.xcframework in Embed Frameworks */,
+				B20000000000000000000006 /* OnnxRuntime.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFrameworksBuildPhase section */
 		9EAA13D4300B0FDC00749064 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B20000000000000000000001 /* SherpaOnnx.xcframework in Frameworks */,
+				B20000000000000000000003 /* OnnxRuntime.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -88,6 +114,8 @@
 		9EAA13CE300B0FDC00749064 = {
 			isa = PBXGroup;
 			children = (
+				B20000000000000000000002 /* SherpaOnnx.xcframework */,
+				B20000000000000000000004 /* OnnxRuntime.xcframework */,
 				9EAA13D9300B0FDC00749064 /* AudiobookMaker */,
 				A10000000000000000000003 /* AudiobookMakerTests */,
 				A10000000000000000000004 /* AudiobookMakerUITests */,
@@ -115,6 +143,7 @@
 				9EAA13D3300B0FDC00749064 /* Sources */,
 				9EAA13D4300B0FDC00749064 /* Frameworks */,
 				9EAA13D5300B0FDC00749064 /* Resources */,
+				B20000000000000000000007 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);

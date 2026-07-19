@@ -5,12 +5,16 @@ nonisolated enum RepositoryError: LocalizedError, Equatable, Sendable {
     case duplicateBook(existingID: UUID)
     case bookNotFound
     case illegalTransition
+    case modelUnavailable
+    case invalidVoice
 
     var errorDescription: String? {
         switch self {
         case .duplicateBook: "这本书已经存在于资料库中。"
         case .bookNotFound: "找不到指定书籍。"
         case .illegalTransition: "任务状态变更不合法。"
+        case .modelUnavailable: "所选模型尚未安装或当前不可用。"
+        case .invalidVoice: "所选音色不属于当前模型版本。"
         }
     }
 }
@@ -18,29 +22,63 @@ nonisolated enum RepositoryError: LocalizedError, Equatable, Sendable {
 @ModelActor
 actor LibraryRepository {
     nonisolated static let systemVoiceID = "com.audiobookmaker.apple-system-speech"
-    nonisolated static let cosyVoiceID = "aufklarer/CosyVoice3-0.5B-MLX-8bit-full"
+    nonisolated static let kokoroID = TTSModelCatalog.kokoroID
 
     func seedDefaults() throws {
         let settingDescriptor = FetchDescriptor<AppSettingRecord>()
         if try modelContext.fetchCount(settingDescriptor) == 0 {
             modelContext.insert(AppSettingRecord())
         }
-        let modelID = Self.cosyVoiceID
+        let legacyIDs = ["aufklarer/" + "Cosy" + "Voice3-0.5B-" + "M" + "LX-8bit-full", "cosy" + "voice", "cosy" + "voice3"]
+        let existingSettings = try modelContext.fetch(FetchDescriptor<AppSettingRecord>())
+        for setting in existingSettings where legacyIDs.contains(where: { setting.selectedModelID.localizedCaseInsensitiveContains($0) }) {
+            setting.selectedModelID = Self.systemVoiceID
+            setting.selectedModelVersion = "system"
+            setting.selectedVoiceID = nil
+        }
+        let existingJobs = try modelContext.fetch(FetchDescriptor<ConversionJobRecord>())
+        for job in existingJobs where legacyIDs.contains(where: { job.modelID.localizedCaseInsensitiveContains($0) }) {
+            job.legacyRuntimeDiagnostic = "Migrated unsupported legacy runtime: \(job.modelID)"
+        }
+        let legacyModels = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
+        for model in legacyModels where legacyIDs.contains(where: { model.id.localizedCaseInsensitiveContains($0) }) {
+            modelContext.delete(model)
+        }
+
+        let modelID = Self.kokoroID
         let modelDescriptor = FetchDescriptor<TTSModelRecord>(
             predicate: #Predicate { $0.id == modelID }
         )
-        if try modelContext.fetchCount(modelDescriptor) == 0 {
-            modelContext.insert(
-                TTSModelRecord(
-                    id: modelID,
-                    displayName: "CosyVoice3 0.5B",
-                    frameworkRaw: "CosyVoice / MLX",
-                    source: modelID,
-                    isDefault: false,
-                    installationRaw: "notInstalled",
-                    runtimeRaw: "unloaded"
-                )
+        let currentKokoroVoices = TTSModelCatalog.kokoroVoices
+        let currentKokoroVoicesData = try JSONEncoder().encode(currentKokoroVoices)
+        if let record = try modelContext.fetch(modelDescriptor).first {
+            // The bundled manifest is authoritative for this versioned model ID.
+            // Older app builds may have created the record before voicesData was
+            // populated, while the UI already displays the current catalog.
+            record.displayName = TTSModelCatalog.kokoro.displayName
+            record.frameworkRaw = "sherpa-onnx"
+            record.source = TTSModelCatalog.kokoro.downloadURL.absoluteString
+            record.version = TTSModelCatalog.kokoro.version
+            record.downloadSize = TTSModelCatalog.kokoro.downloadBytes
+            record.voicesData = currentKokoroVoicesData
+            if !currentKokoroVoices.contains(where: { $0.id == record.selectedVoiceID }) {
+                record.selectedVoiceID = TTSModelCatalog.kokoroDefaultVoiceID
+            }
+        } else {
+            let record = TTSModelRecord(
+                id: modelID,
+                displayName: TTSModelCatalog.kokoro.displayName,
+                frameworkRaw: "sherpa-onnx",
+                source: TTSModelCatalog.kokoro.downloadURL.absoluteString,
+                isDefault: false,
+                installationRaw: "notInstalled",
+                runtimeRaw: "unloaded"
             )
+            record.version = TTSModelCatalog.kokoro.version
+            record.downloadSize = TTSModelCatalog.kokoro.downloadBytes
+            record.selectedVoiceID = TTSModelCatalog.kokoroDefaultVoiceID
+            record.voicesData = currentKokoroVoicesData
+            modelContext.insert(record)
         }
         let systemVoiceID = Self.systemVoiceID
         let systemVoiceDescriptor = FetchDescriptor<TTSModelRecord>(
@@ -59,8 +97,14 @@ actor LibraryRepository {
             )
         }
         let allModels = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
-        for model in allModels {
-            model.isDefault = model.id == systemVoiceID
+        if !allModels.contains(where: { $0.isDefault && ($0.id == systemVoiceID || ($0.id == Self.kokoroID && $0.installationRaw == "installed")) }) {
+            for model in allModels { model.isDefault = model.id == systemVoiceID }
+        }
+        if let defaultKokoro = allModels.first(where: { $0.id == modelID && $0.isDefault }) {
+            for setting in existingSettings where setting.selectedModelID == modelID {
+                setting.selectedModelVersion = defaultKokoro.version
+                setting.selectedVoiceID = defaultKokoro.selectedVoiceID
+            }
         }
         try modelContext.save()
     }
@@ -77,6 +121,11 @@ actor LibraryRepository {
                 isDefault: $0.isDefault,
                 installation: ModelInstallationState(rawValue: $0.installationRaw) ?? .unavailable,
                 runtime: ModelRuntimeState(rawValue: $0.runtimeRaw) ?? .unavailable
+                ,version: $0.version,
+                selectedVoiceID: $0.selectedVoiceID,
+                downloadProgress: $0.downloadProgress,
+                failureMessage: $0.failureMessage,
+                downloadSize: $0.downloadSize > 0 ? $0.downloadSize : nil
             )
         }
     }
@@ -95,20 +144,57 @@ actor LibraryRepository {
             maxConcurrentJobs: record.maxConcurrentJobs,
             selectedModelID: record.selectedModelID,
             keepIntermediatePCM: record.keepIntermediatePCM
+            ,selectedModelVersion: record.selectedModelVersion,
+            selectedVoiceID: record.selectedVoiceID
         )
     }
 
     func setDefaultModel(id: String) throws {
         let models = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
-        guard models.contains(where: { $0.id == id }) else {
+        guard let selected = models.first(where: { $0.id == id }) else {
             throw RepositoryError.bookNotFound
+        }
+        guard selected.installationRaw == ModelInstallationState.installed.rawValue,
+              selected.runtimeRaw != ModelRuntimeState.unavailable.rawValue else {
+            throw RepositoryError.modelUnavailable
         }
         for model in models { model.isDefault = model.id == id }
         let settings = try modelContext.fetch(FetchDescriptor<AppSettingRecord>()).first
             ?? AppSettingRecord()
         if settings.modelContext == nil { modelContext.insert(settings) }
         settings.selectedModelID = id
+        settings.selectedModelVersion = selected.version
+        settings.selectedVoiceID = selected.selectedVoiceID
         try modelContext.save()
+    }
+
+    func updateModelInstallState(id: String, event: ModelInstallEvent) throws {
+        let descriptor = FetchDescriptor<TTSModelRecord>(predicate: #Predicate { $0.id == id })
+        guard let model = try modelContext.fetch(descriptor).first else { throw RepositoryError.bookNotFound }
+        model.installationRaw = event.state.rawValue
+        model.downloadProgress = event.progress
+        model.failureMessage = event.message
+        model.runtimeRaw = event.state == .installed ? ModelRuntimeState.ready.rawValue : ModelRuntimeState.unloaded.rawValue
+        if event.state == .installed { model.lastValidatedAt = .now }
+        try modelContext.save()
+    }
+
+    func setVoice(modelID: String, voiceID: String) throws {
+        let descriptor = FetchDescriptor<TTSModelRecord>(predicate: #Predicate { $0.id == modelID })
+        guard let model = try modelContext.fetch(descriptor).first else { throw RepositoryError.bookNotFound }
+        let voices = (try? JSONDecoder().decode([TTSVoiceDescriptor].self, from: model.voicesData ?? Data())) ?? []
+        guard voices.contains(where: { $0.id == voiceID }) else { throw RepositoryError.invalidVoice }
+        model.selectedVoiceID = voiceID
+        if model.isDefault, let setting = try modelContext.fetch(FetchDescriptor<AppSettingRecord>()).first {
+            setting.selectedVoiceID = voiceID
+        }
+        try modelContext.save()
+    }
+
+    func voices(modelID: String) throws -> [TTSVoiceDescriptor] {
+        let descriptor = FetchDescriptor<TTSModelRecord>(predicate: #Predicate { $0.id == modelID })
+        guard let model = try modelContext.fetch(descriptor).first else { return [] }
+        return (try? JSONDecoder().decode([TTSVoiceDescriptor].self, from: model.voicesData ?? Data())) ?? []
     }
 
     func updateSettings(
@@ -145,6 +231,7 @@ actor LibraryRepository {
             title: draft.title,
             author: draft.author,
             languageCode: draft.languageCode,
+            publicationDate: draft.publicationDate,
             sourceRelativePath: draft.sourceRelativePath,
             sourceSHA256: draft.sourceSHA256,
             coverRelativePath: draft.coverRelativePath,
@@ -183,6 +270,7 @@ actor LibraryRepository {
                 totalCharacters: book.totalCharacters,
                 jobCompletedUnits: latestJob?.completedUnits,
                 jobTotalUnits: latestJob?.totalUnits,
+                modelID: latestJob?.modelID,
                 chapters: book.chapters
                     .sorted { $0.index < $1.index }
                     .map {
@@ -257,6 +345,10 @@ actor LibraryRepository {
     }
 
     func enqueueConversion(bookID: UUID, modelID: String) throws -> UUID {
+        try enqueueConversion(bookID: bookID, selection: LockedTTSSelection(modelID: modelID, modelVersion: "system", voiceID: nil))
+    }
+
+    func enqueueConversion(bookID: UUID, selection: LockedTTSSelection) throws -> UUID {
         let descriptor = FetchDescriptor<BookRecord>(predicate: #Predicate { $0.id == bookID })
         guard let book = try modelContext.fetch(descriptor).first else {
             throw RepositoryError.bookNotFound
@@ -266,7 +358,9 @@ actor LibraryRepository {
         )
         let nextOrdinal = (try modelContext.fetch(jobDescriptor).first?.queueOrdinal ?? 0) + 1
         let job = ConversionJobRecord(
-            modelID: modelID,
+            modelID: selection.modelID,
+            modelVersion: selection.modelVersion,
+            voiceID: selection.voiceID,
             queueOrdinal: nextOrdinal,
             totalUnits: book.totalCharacters
         )
@@ -299,6 +393,46 @@ actor LibraryRepository {
         let jobID = try enqueueConversion(bookID: bookID, modelID: modelID)
         try startConversion(bookID: bookID, jobID: jobID)
         return jobID
+    }
+
+    func jobSelection(id: UUID) throws -> LockedTTSSelection {
+        let descriptor = FetchDescriptor<ConversionJobRecord>(predicate: #Predicate { $0.id == id })
+        guard let job = try modelContext.fetch(descriptor).first else { throw RepositoryError.bookNotFound }
+        return LockedTTSSelection(modelID: job.modelID, modelVersion: job.modelVersion, voiceID: job.voiceID)
+    }
+
+    func resumableConversion(bookID: UUID) throws -> ResumableConversionJob {
+        let descriptor = FetchDescriptor<BookRecord>(predicate: #Predicate { $0.id == bookID })
+        guard let book = try modelContext.fetch(descriptor).first,
+              let job = book.jobs
+                .filter({ $0.state == .paused || $0.state == .interrupted })
+                .max(by: { $0.queueOrdinal < $1.queueOrdinal }) else {
+            throw RepositoryError.illegalTransition
+        }
+        return ResumableConversionJob(
+            id: job.id,
+            selection: LockedTTSSelection(
+                modelID: job.modelID,
+                modelVersion: job.modelVersion,
+                voiceID: job.voiceID
+            )
+        )
+    }
+
+    func requeueConversion(bookID: UUID, jobID: UUID) throws {
+        let bookDescriptor = FetchDescriptor<BookRecord>(predicate: #Predicate { $0.id == bookID })
+        let jobDescriptor = FetchDescriptor<ConversionJobRecord>(predicate: #Predicate { $0.id == jobID })
+        guard let book = try modelContext.fetch(bookDescriptor).first,
+              let job = try modelContext.fetch(jobDescriptor).first,
+              job.book?.id == bookID,
+              job.state.canTransition(to: .queued) else {
+            throw RepositoryError.illegalTransition
+        }
+        job.state = .queued
+        job.lastHeartbeatAt = .now
+        book.status = .queued
+        book.updatedAt = .now
+        try modelContext.save()
     }
 
     func cancelQueuedConversion(bookID: UUID, jobID: UUID) throws {
@@ -437,6 +571,8 @@ actor LibraryRepository {
             )
         }
         guard !chapters.isEmpty else { throw ExportError.bookIncomplete }
+        let latestJob = book.jobs.max { $0.queueOrdinal < $1.queueOrdinal }
+        let modelID = latestJob?.modelID ?? TTSModelCatalog.systemID
         return ExportBookDraft(
             id: book.id,
             title: book.title,
@@ -444,6 +580,9 @@ actor LibraryRepository {
             languageCode: book.languageCode,
             coverRelativePath: book.coverRelativePath,
             sourceSHA256: book.sourceSHA256,
+            modelID: modelID,
+            voiceID: latestJob?.voiceID,
+            publicationDate: book.publicationDate ?? book.importedAt,
             chapters: chapters
         )
     }

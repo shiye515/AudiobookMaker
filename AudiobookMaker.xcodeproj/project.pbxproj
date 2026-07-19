@@ -7,10 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		B20000000000000000000001 /* SherpaOnnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SherpaOnnx.xcframework */; };
-		B20000000000000000000003 /* OnnxRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* OnnxRuntime.xcframework */; };
-		B20000000000000000000005 /* SherpaOnnx.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* SherpaOnnx.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		B20000000000000000000006 /* OnnxRuntime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* OnnxRuntime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B20000000000000000000001 /* Vendor/SherpaOnnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */; };
+		B20000000000000000000003 /* Vendor/OnnxRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */; };
+		B20000000000000000000005 /* Vendor/SherpaOnnx.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B20000000000000000000006 /* Vendor/OnnxRuntime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -30,12 +30,27 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		B20000000000000000000007 /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				B20000000000000000000005 /* Vendor/SherpaOnnx.xcframework in Embed Frameworks */,
+				B20000000000000000000006 /* Vendor/OnnxRuntime.xcframework in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
-		B20000000000000000000002 /* SherpaOnnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/SherpaOnnx.xcframework; sourceTree = SOURCE_ROOT; };
-		B20000000000000000000004 /* OnnxRuntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/OnnxRuntime.xcframework; sourceTree = SOURCE_ROOT; };
 		9EAA13D7300B0FDC00749064 /* AudiobookMaker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AudiobookMaker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000001 /* AudiobookMakerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AudiobookMakerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000002 /* AudiobookMakerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AudiobookMakerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/SherpaOnnx.xcframework; sourceTree = SOURCE_ROOT; };
+		B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/OnnxRuntime.xcframework; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -69,28 +84,13 @@
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		B20000000000000000000007 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				B20000000000000000000005 /* SherpaOnnx.xcframework in Embed Frameworks */,
-				B20000000000000000000006 /* OnnxRuntime.xcframework in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
 /* Begin PBXFrameworksBuildPhase section */
 		9EAA13D4300B0FDC00749064 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B20000000000000000000001 /* SherpaOnnx.xcframework in Frameworks */,
-				B20000000000000000000003 /* OnnxRuntime.xcframework in Frameworks */,
+				B20000000000000000000001 /* Vendor/SherpaOnnx.xcframework in Frameworks */,
+				B20000000000000000000003 /* Vendor/OnnxRuntime.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -114,8 +114,8 @@
 		9EAA13CE300B0FDC00749064 = {
 			isa = PBXGroup;
 			children = (
-				B20000000000000000000002 /* SherpaOnnx.xcframework */,
-				B20000000000000000000004 /* OnnxRuntime.xcframework */,
+				B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */,
+				B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */,
 				9EAA13D9300B0FDC00749064 /* AudiobookMaker */,
 				A10000000000000000000003 /* AudiobookMakerTests */,
 				A10000000000000000000004 /* AudiobookMakerUITests */,
@@ -438,6 +438,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AudiobookMakerIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AudiobookMaker/AudiobookMaker.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -473,6 +474,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AudiobookMakerIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AudiobookMaker/AudiobookMaker.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;

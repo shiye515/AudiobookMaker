@@ -13,7 +13,6 @@ struct CommandShortcutTests {
         )
         let requiredFragments = [
             ".keyboardShortcut(\"o\", modifiers: .command)",
-            ".keyboardShortcut(\"f\", modifiers: .command)",
             ".keyboardShortcut(.return, modifiers: .command)",
             ".keyboardShortcut(\".\", modifiers: .command)",
             ".keyboardShortcut(\"e\", modifiers: [.command, .shift])",

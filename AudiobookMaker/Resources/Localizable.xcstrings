@@ -946,7 +946,14 @@
       }
     },
     "导入" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Import"
+          }
+        }
+      }
     },
     "导入 EPUB" : {
       "localizations" : {
@@ -989,7 +996,14 @@
       }
     },
     "导入中" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Importing"
+          }
+        }
+      }
     },
     "导入结果无法提交到资料库。" : {
       "localizations" : {
@@ -1578,7 +1592,14 @@
       }
     },
     "本机运行" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Runs on This Mac"
+          }
+        }
+      }
     },
     "查看模型框架、运行状态和能力。" : {
       "localizations" : {
@@ -1792,7 +1813,14 @@
       }
     },
     "第 %lld 章转换进度" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Chapter %lld conversion progress"
+          }
+        }
+      }
     },
     "等待开始" : {
       "localizations" : {

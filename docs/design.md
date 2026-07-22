@@ -383,7 +383,9 @@ protocol TTSRuntimeClient: Sendable {
 
 App 不根据框架写分支逻辑。运行时通过 `RuntimeCapabilities` 声明：支持语言、最大文本长度、输出格式、可取消性、参数集合和建议并发。`ConversionCoordinator` 只依据能力切片与调度。
 
-首次内置模型目录包含 Apple 系统语音和 Kokoro 描述记录，但不包含 Kokoro 权重。Kokoro 只有在下载、校验、安全展开并由运行时探测成功后才显示“可用”。“设为默认”和音色切换只改变后续新任务；运行中的任务继续使用创建时锁定的 model ID、version 与 voice ID。
+内置模型目录包含 Apple 系统语音、Kokoro、CosyVoice3 与 Qwen3-TTS 描述记录，但不包含任何模型权重。后两者只在原生 Apple Silicon、macOS 15+ 且 Metal 可用时展示下载操作；Intel/Rosetta 显示“需要原生 Apple Silicon”。模型只有在签名清单校验、逐 artifact 安装、内容收据和离线运行时探测成功后才显示“可用”。“设为默认”和音色切换只改变后续新任务；运行中的任务继续使用创建时锁定的 model ID、version 与 voice ID。
+
+speech-swift 0.0.23 与 MLX Swift 版本由 `Package.resolved` 固定。CosyVoice3 和 Qwen3-TTS 只从 Application Support 下已验证的 snapshot 以 offline 模式加载；缺文件不得触发 Hub 下载。两者声明高内存、并发 1 和安全片段取消边界。Qwen3-TTS 在句子边界二次切至最多 120 字符，CosyVoice3 最多 180 字符；当前片段完成前暂停可能不是即时的，完成后的晚到 PCM 在取消/超时后丢弃。模型切换先等待共享生成槽，再释放旧 session，防止两份权重同时驻留。
 
 ---
 
@@ -627,7 +629,7 @@ HIG 建议避免把关键信息只放在窗口底部，因此当前转换进度�
 
 - 启用 App Sandbox，只申请 User Selected File Read/Write；内部文件保存在 App 容器。
 - EPUB 内容、章节正文、模型请求和音频不进行网络上传。
-- App 的网络客户端能力仅服务于用户主动发起的 Kokoro 模型包下载；请求只包含固定 URL 与 App User-Agent，不读取或附带书名、正文、音频、文件路径或其他用户内容。模型安装后可完全离线运行。
+- App 的网络客户端能力仅服务于用户主动发起的签名模型下载；请求只包含固定 artifact URL 与 App User-Agent，不读取或附带书名、正文、试听文本、voice 设置、音频、文件路径或其他用户内容。每份清单声明精确 HTTPS origin/redirect 主机；模型安装后可完全离线运行。
 - security-scoped URL 只在复制或导出期间短时持有；导出目录书签仅在用户明确选择后保存。
 - 解包防 Zip Slip、压缩炸弹、路径逃逸、符号链接与超大资源。
 - XPC 接口限制允许调用的方法、输入大小和文件位置，校验服务签名和协议版本。

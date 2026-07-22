@@ -293,9 +293,21 @@ actor KokoroTTSRuntimeClient: TTSRuntimeClient {
 actor RoutingTTSRuntimeClient: TTSRuntimeClient {
     private var system: SystemSpeechRuntimeClient?
     private let kokoro: KokoroTTSRuntimeClient
+    private let speechSwift: SpeechSwiftTTSRuntimeClient?
 
-    init(directories: AppDirectories) {
+    init(
+        directories: AppDirectories,
+        platformSupport: SpeechSwiftPlatformSupport = SpeechSwiftPlatformSupport(),
+        speechSwiftSessionFactory: any SpeechSwiftSessionFactory = LiveSpeechSwiftSessionFactory()
+    ) {
         kokoro = KokoroTTSRuntimeClient(directories: directories)
+        speechSwift = platformSupport.status().isSupported
+            ? SpeechSwiftTTSRuntimeClient(
+                directories: directories,
+                platformSupport: platformSupport,
+                sessionFactory: speechSwiftSessionFactory
+            )
+            : nil
     }
 
     func capabilities() async throws -> RuntimeCapabilities {
@@ -304,16 +316,22 @@ actor RoutingTTSRuntimeClient: TTSRuntimeClient {
 
     func capabilities(for modelID: String) async throws -> RuntimeCapabilities {
         switch modelID {
-        case TTSModelCatalog.systemID: try await systemRuntime().capabilities()
-        case TTSModelCatalog.kokoroID: try await kokoro.capabilities()
+        case TTSModelCatalog.systemID: return try await systemRuntime().capabilities()
+        case TTSModelCatalog.kokoroID: return try await kokoro.capabilities()
+        case TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID:
+            guard let speechSwift else { throw RuntimeError.incompatibleRuntime }
+            return try await speechSwift.capabilities(for: modelID)
         default: throw RuntimeError.modelUnavailable
         }
     }
 
     func synthesize(_ request: SynthesisRequest) async throws -> SynthesisResult {
         switch request.modelID {
-        case TTSModelCatalog.systemID: try await systemRuntime().synthesize(request)
-        case TTSModelCatalog.kokoroID: try await kokoro.synthesize(request)
+        case TTSModelCatalog.systemID: return try await systemRuntime().synthesize(request)
+        case TTSModelCatalog.kokoroID: return try await kokoro.synthesize(request)
+        case TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID:
+            guard let speechSwift else { throw RuntimeError.incompatibleRuntime }
+            return try await speechSwift.synthesize(request)
         default: throw RuntimeError.modelUnavailable
         }
     }
@@ -321,6 +339,7 @@ actor RoutingTTSRuntimeClient: TTSRuntimeClient {
     func cancel(requestID: UUID) async {
         if let system { await system.cancel(requestID: requestID) }
         await kokoro.cancel(requestID: requestID)
+        await speechSwift?.cancel(requestID: requestID)
     }
 
     private func systemRuntime() async -> SystemSpeechRuntimeClient {

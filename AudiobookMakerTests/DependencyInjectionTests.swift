@@ -4,6 +4,63 @@ import Testing
 
 struct DependencyInjectionTests {
     @Test @MainActor
+    func modelPresentationUsesInjectedIncompatiblePlatformAndKeepsOtherModelsVisible() throws {
+        let unsupported = SpeechSwiftPlatformSupport(snapshotProvider: {
+            .init(
+                architecture: .x86_64,
+                isRosettaTranslated: false,
+                operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
+                hasMetalDevice: true
+            )
+        })
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dependencies = try DependencyContainer(inMemory: true, rootOverride: root)
+        let store = LibraryPresentationStore(
+            dependencies: dependencies,
+            speechSwiftPlatformSupport: unsupported
+        )
+
+        let system = try #require(store.models.first { $0.id == TTSModelCatalog.systemID })
+        let kokoro = try #require(store.models.first { $0.id == TTSModelCatalog.kokoroID })
+        let qwen = try #require(store.models.first { $0.id == TTSModelCatalog.qwen3TTSID })
+        #expect(system.isAvailable)
+        #expect(kokoro.installation == .notInstalled)
+        #expect(!store.isPlatformCompatible(modelID: qwen.id))
+        #expect(qwen.installation == .unavailable)
+        #expect(qwen.runtimeStatus == "需要原生 Apple Silicon")
+    }
+
+    @Test @MainActor
+    func makingAReadyModelDefaultLeavesExactlyOneDefault() throws {
+        let store = LibraryPresentationStore()
+        let qwenIndex = try #require(store.models.firstIndex { $0.id == TTSModelCatalog.qwen3TTSID })
+        store.models[qwenIndex] = TTSModelSnapshot(
+            id: TTSModelCatalog.qwen3TTSID,
+            name: TTSModelCatalog.qwen3TTS.displayName,
+            framework: "speech-swift / MLX",
+            runtimeStatus: "已就绪",
+            languages: "中文、英文",
+            isAvailable: true,
+            isDefault: false,
+            version: TTSModelCatalog.qwen3TTS.version,
+            installation: .installed,
+            downloadProgress: 1,
+            failureMessage: nil,
+            downloadSize: TTSModelCatalog.qwen3TTS.downloadBytes,
+            selectedVoiceID: "vivian",
+            voices: TTSModelCatalog.qwen3TTSVoices
+        )
+        store.selectedModelID = TTSModelCatalog.qwen3TTSID
+
+        store.makeSelectedModelDefault()
+
+        #expect(store.models.count { $0.isDefault } == 1)
+        #expect(store.models[qwenIndex].isDefault)
+    }
+
+    @Test @MainActor
     func bookModelLabelUsesDefaultUntilAConversionLocksItsModel() throws {
         let store = LibraryPresentationStore()
         for index in store.models.indices {

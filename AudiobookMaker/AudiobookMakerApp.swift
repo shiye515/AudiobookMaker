@@ -6,6 +6,7 @@
 //
 
 import AppKit
+import Darwin
 import SwiftData
 import SwiftUI
 
@@ -27,6 +28,16 @@ struct AudiobookMakerApp: App {
             let arguments = ProcessInfo.processInfo.arguments
             let isEndToEndUITest = arguments.contains("--uitest-e2e")
             let usesIsolatedUITestData = arguments.contains { $0.hasPrefix("--uitest-") }
+            let presentationPlatformSupport = arguments.contains("--uitest-speech-swift-incompatible")
+                ? SpeechSwiftPlatformSupport(snapshotProvider: {
+                    .init(
+                        architecture: .x86_64,
+                        isRosettaTranslated: false,
+                        operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
+                        hasMetalDevice: true
+                    )
+                })
+                : SpeechSwiftPlatformSupport()
             let dependencies = try DependencyContainer(
                 inMemory: usesIsolatedUITestData,
                 rootOverride: usesIsolatedUITestData
@@ -38,6 +49,27 @@ struct AudiobookMakerApp: App {
                 runtime: isEndToEndUITest ? MockTTSRuntimeClient() : nil
             )
             self.dependencies = dependencies
+            if arguments.contains(SpeechSwiftAcceptanceRunner.launchArgument) {
+                Task { @MainActor in
+                    do {
+                        try await SpeechSwiftAcceptanceRunner.run()
+                        Darwin.exit(EXIT_SUCCESS)
+                    } catch {
+                        FileHandle.standardError.write(Data("speech-swift acceptance failed: \(error.localizedDescription)\n".utf8))
+                        Darwin.exit(EXIT_FAILURE)
+                    }
+                }
+            } else if arguments.contains(KokoroCompatibilityAcceptanceRunner.launchArgument) {
+                Task { @MainActor in
+                    do {
+                        try await KokoroCompatibilityAcceptanceRunner.run()
+                        Darwin.exit(EXIT_SUCCESS)
+                    } catch {
+                        FileHandle.standardError.write(Data("Kokoro compatibility acceptance failed: \(error.localizedDescription)\n".utf8))
+                        Darwin.exit(EXIT_FAILURE)
+                    }
+                }
+            }
             if arguments.contains("--uitest-narrow-window") {
                 self.defaultWindowSize = CGSize(width: 760, height: 600)
             } else if arguments.contains("--uitest-short-window") {
@@ -46,9 +78,15 @@ struct AudiobookMakerApp: App {
                 self.defaultWindowSize = CGSize(width: 1180, height: 760)
             }
             if arguments.contains("--uitest-populated-library") {
-                _store = State(initialValue: LibraryPresentationStore(mode: .populated))
+                _store = State(initialValue: LibraryPresentationStore(
+                    mode: .populated,
+                    speechSwiftPlatformSupport: presentationPlatformSupport
+                ))
             } else {
-                _store = State(initialValue: LibraryPresentationStore(dependencies: dependencies))
+                _store = State(initialValue: LibraryPresentationStore(
+                    dependencies: dependencies,
+                    speechSwiftPlatformSupport: presentationPlatformSupport
+                ))
             }
         } catch {
             fatalError("Could not initialize AudiobookMaker: \(error)")

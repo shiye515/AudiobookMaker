@@ -46,13 +46,13 @@ AudiobookMaker 是一款 macOS 桌面应用，帮助用户将 **EPUB 格式电�
 
 | 编号 | 功能 | 说明 |
 |------|------|------|
-| FR-2.1 | 模型列表 | 展示已安装 / 可切换的开源 TTS 模型 |
+| FR-2.1 | 模型列表 | 展示 Apple 系统语音、Kokoro，以及原生 Apple Silicon 上可安装的 CosyVoice3/Qwen3-TTS |
 | FR-2.2 | 模型切换 | 在**不同 TTS 框架**的模型间切换（多框架适配，见 §4） |
-| FR-2.3 | 默认模型 | 首次启动使用 Apple 系统语音；下载并验证后可切换为 `sherpa-onnx/kokoro-multi-lang-v1_1-int8` |
-| FR-2.4 | 模型状态 | 显示模型加载状态、所属框架、基本参数（语音参数本期先用默认值，见 FR-2.5） |
-| FR-2.5 | 语音参数（默认） | 音色 / 语速 / 语调本期使用模型默认，界面预留配置入口但暂不实装复杂配置 |
+| FR-2.3 | 默认模型 | 首次启动使用 Apple 系统语音；模型下载、校验及离线探测后才可设为新任务的默认模型 |
+| FR-2.4 | 模型状态 | 区分未安装、下载中、损坏、运行时不兼容与“需要原生 Apple Silicon”，并展示大小、框架、版本和许可 |
+| FR-2.5 | 语音参数（默认） | Kokoro/speech-swift 展示稳定可搜索的预置音色；首版不提供克隆、参考录音、风格或复杂采样参数 |
 
-> 注：本地推理运行时的具体架构（如何拉起模型、进程管理、资源占用）**不在本期设计范围内**，App 仅通过约定的接口边界与之交互（见 §6）。
+> speech-swift 模型仅支持原生 Apple Silicon、Metal 与 macOS 15+；Intel/Rosetta 环境不构造运行时、不下载模型，Apple 系统语音与 Kokoro 保持可用。CosyVoice3 约 1.12 GB，Qwen3-TTS（含 tokenizer）约 2.50 GB，安装前必须为下载、staging 与安全余量预留空间。
 
 ### 3.3 音频封装与导出（Audio & Export）
 
@@ -72,9 +72,10 @@ AudiobookMaker 是一款 macOS 桌面应用，帮助用户将 **EPUB 格式电�
 模型管理需支持**不同 TTS 框架**的模型切换（非仅同框架换权重）。已知框架示例：
 
 - **Kokoro**（本期固定 `kokoro-multi-lang-v1_1-int8`，由 sherpa-onnx/ONNX Runtime 在 x86_64 与 arm64 CPU 上推理）
-- 其他开源 TTS 框架（如 Bark / FishSpeech / GPT-SoVITS 等，后续扩展）
+- **CosyVoice3**（固定 0.5B MLX 8-bit snapshot；default voice；原生 Apple Silicon）
+- **Qwen3-TTS**（固定 0.6B CustomVoice MLX bf16 snapshot 与 tokenizer；9 个预置 speaker；原生 Apple Silicon）
 
-适配策略：App 侧定义统一的 **TTS 抽象接口**（model ID + version + voice ID + 输入文本 + purpose → 输出音频文件），Apple 系统语音与 Kokoro 通过适配层接入。转换任务创建时冻结模型版本和音色，切换默认值只影响后续任务。
+适配策略：App 侧定义统一的 **TTS 抽象接口**（model ID + version + voice ID + 输入文本 + purpose → 输出音频文件），四类后端通过适配层接入。转换任务创建时冻结模型版本和音色，切换默认值只影响后续任务。speech-swift 的试听与转换共享单一高内存配额；暂停/取消可能等待当前安全片段完成，但晚到结果必须丢弃。
 
 ---
 

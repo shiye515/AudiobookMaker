@@ -11,6 +11,8 @@
 		B20000000000000000000003 /* Vendor/OnnxRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */; };
 		B20000000000000000000005 /* Vendor/SherpaOnnx.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B20000000000000000000006 /* Vendor/OnnxRuntime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		B30000000000000000000001 /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = B30000000000000000000003 /* Qwen3TTS */; };
+		B30000000000000000000002 /* CosyVoiceTTS in Frameworks */ = {isa = PBXBuildFile; productRef = B30000000000000000000004 /* CosyVoiceTTS */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -91,6 +93,8 @@
 			files = (
 				B20000000000000000000001 /* Vendor/SherpaOnnx.xcframework in Frameworks */,
 				B20000000000000000000003 /* Vendor/OnnxRuntime.xcframework in Frameworks */,
+				B30000000000000000000001 /* Qwen3TTS in Frameworks */,
+				B30000000000000000000002 /* CosyVoiceTTS in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -144,6 +148,7 @@
 				9EAA13D4300B0FDC00749064 /* Frameworks */,
 				9EAA13D5300B0FDC00749064 /* Resources */,
 				B20000000000000000000007 /* Embed Frameworks */,
+				B30000000000000000000005 /* Build MLX Metal Library */,
 			);
 			buildRules = (
 			);
@@ -154,6 +159,8 @@
 			);
 			name = AudiobookMaker;
 			packageProductDependencies = (
+				B30000000000000000000003 /* Qwen3TTS */,
+				B30000000000000000000004 /* CosyVoiceTTS */,
 			);
 			productName = AudiobookMaker;
 			productReference = 9EAA13D7300B0FDC00749064 /* AudiobookMaker.app */;
@@ -238,6 +245,9 @@
 			);
 			mainGroup = 9EAA13CE300B0FDC00749064;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				B30000000000000000000006 /* XCLocalSwiftPackageReference "Vendor/speech-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 9EAA13D8300B0FDC00749064 /* Products */;
 			projectDirPath = "";
@@ -273,6 +283,30 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		B30000000000000000000005 /* Build MLX Metal Library */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Tools/Dependencies/build-mlx-metallib.sh",
+			);
+			name = "Build MLX Metal Library";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/MLX/mlx.metallib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/Tools/Dependencies/build-mlx-metallib.sh\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		9EAA13D3300B0FDC00749064 /* Sources */ = {
@@ -446,6 +480,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AudiobookMaker/Info.plist;
@@ -482,6 +517,7 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = AudiobookMaker/Info.plist;
@@ -614,6 +650,26 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		B30000000000000000000006 /* XCLocalSwiftPackageReference "Vendor/speech-swift" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "Vendor/speech-swift";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B30000000000000000000003 /* Qwen3TTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B30000000000000000000006 /* XCLocalSwiftPackageReference "Vendor/speech-swift" */;
+			productName = Qwen3TTS;
+		};
+		B30000000000000000000004 /* CosyVoiceTTS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B30000000000000000000006 /* XCLocalSwiftPackageReference "Vendor/speech-swift" */;
+			productName = CosyVoiceTTS;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 9EAA13CF300B0FDC00749064 /* Project object */;
 }

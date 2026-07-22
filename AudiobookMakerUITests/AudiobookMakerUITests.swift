@@ -170,6 +170,66 @@ final class AudiobookMakerUITests: XCTestCase {
         XCTAssertFalse(ready.buttons["voice.preview"].label.isEmpty)
         ready.buttons["voice.preview"].click()
         XCTAssertTrue(ready.descendants(matching: .any)["voice.preview.error"].waitForExistence(timeout: 10))
+        ready.terminate()
+
+        let speech = XCUIApplication()
+        speech.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+            "--uitest-speech-swift-ready",
+            "--uitest-fixed-window",
+        ]
+        speech.launch()
+        XCTAssertTrue(speech.windows.firstMatch.waitForExistence(timeout: 5))
+        selectModelFromMenu(in: speech, label: "Qwen3-TTS 0.6B CustomVoice MLX bf16")
+        let qwen = speech.descendants(matching: .any)["model.row.\(TTSModelCatalogTestID.qwen)"]
+        XCTAssertTrue(qwen.waitForExistence(timeout: 5))
+        XCTAssertFalse(qwen.label.isEmpty)
+        let qwenVoicePicker = speech.popUpButtons["voice.picker"]
+        XCTAssertTrue(qwenVoicePicker.waitForExistence(timeout: 5))
+        qwenVoicePicker.click()
+        let aiden = speech.menuItems["Aiden · English"]
+        XCTAssertTrue(aiden.waitForExistence(timeout: 5))
+        aiden.click()
+        let qwenSearch = speech.textFields["voice.search"]
+        qwenSearch.click(); qwenSearch.typeText("Aiden")
+        XCTAssertTrue(speech.buttons["voice.preview"].exists)
+        XCTAssertFalse(speech.buttons["voice.preview"].label.isEmpty)
+        let makeDefault = speech.buttons["设为默认"]
+        XCTAssertTrue(makeDefault.waitForExistence(timeout: 5))
+        makeDefault.click()
+        XCTAssertTrue(speech.staticTexts["当前默认模型"].waitForExistence(timeout: 5))
+        speech.terminate()
+
+        let incompatible = XCUIApplication()
+        incompatible.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+            "--uitest-speech-swift-incompatible",
+            "--uitest-fixed-window",
+        ]
+        incompatible.launch()
+        XCTAssertTrue(incompatible.windows.firstMatch.waitForExistence(timeout: 5))
+        selectModelFromMenu(in: incompatible, label: "Qwen3-TTS 0.6B CustomVoice MLX bf16")
+        let incompatibleQwen = incompatible.descendants(matching: .any)["model.row.\(TTSModelCatalogTestID.qwen)"]
+        XCTAssertTrue(incompatibleQwen.waitForExistence(timeout: 5))
+        XCTAssertTrue(incompatible.staticTexts["需要原生 Apple Silicon、macOS 15 或更高版本及 Metal"].waitForExistence(timeout: 5))
+        XCTAssertFalse(incompatible.buttons["model.download"].exists)
+        incompatible.terminate()
+
+        let busy = XCUIApplication()
+        busy.launchArguments += [
+            "-AppleLanguages", "(zh-Hans)", "-AppleLocale", "zh_CN",
+            "--uitest-speech-swift-ready",
+            "--uitest-preview-busy",
+            "--uitest-fixed-window",
+        ]
+        busy.launch()
+        XCTAssertTrue(busy.windows.firstMatch.waitForExistence(timeout: 5))
+        selectModelFromMenu(in: busy, label: "Qwen3-TTS 0.6B CustomVoice MLX bf16")
+        let busyPreview = busy.buttons["voice.preview"]
+        XCTAssertTrue(busyPreview.waitForExistence(timeout: 5))
+        XCTAssertFalse(busyPreview.isEnabled)
+        XCTAssertTrue(busy.staticTexts["正式转换正在使用语音运行时，完成或暂停后可试听。"].waitForExistence(timeout: 5))
+        XCTAssertFalse(busyPreview.label.isEmpty)
     }
 
     @MainActor
@@ -242,16 +302,22 @@ final class AudiobookMakerUITests: XCTestCase {
 
     @MainActor
     private func selectKokoroFromMenu(in app: XCUIApplication) {
+        selectModelFromMenu(in: app, label: "Kokoro 多语言 Int8")
+    }
+
+    @MainActor
+    private func selectModelFromMenu(in app: XCUIApplication, label: String) {
         let englishModelMenu = app.menuBars.menuBarItems["Model"]
         let modelMenu = englishModelMenu.exists ? englishModelMenu : app.menuBars.menuBarItems["模型"]
         XCTAssertTrue(modelMenu.waitForExistence(timeout: 5))
         modelMenu.click()
-        let kokoro = app.menuItems["Kokoro 多语言 Int8"]
-        XCTAssertTrue(kokoro.waitForExistence(timeout: 5))
-        kokoro.click()
+        let model = app.menuItems[label]
+        XCTAssertTrue(model.waitForExistence(timeout: 5))
+        model.click()
     }
 }
 
 private enum TTSModelCatalogTestID {
     static let kokoro = "sherpa-onnx/kokoro-multi-lang-v1_1-int8"
+    static let qwen = "soniqo.speech-swift/qwen3-tts-12hz-0.6b-customvoice-mlx-bf16"
 }

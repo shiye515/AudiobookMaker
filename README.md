@@ -28,7 +28,7 @@
 - **真正的 M4B 有声书**：导出一个可直接加入 Apple Books 等播放器的 `.m4b` 文件，而不是音频文件压缩包。
 - **章节导航**：把 EPUB 章节写入音频时间线，可在播放器中快速跳转。
 - **封面与元数据**：保留封面，并写入标题、作者、旁白者、类型和出版日期。
-- **本地 AI 音色**：支持基于 sherpa-onnx 的 Kokoro 本地语音合成，也可使用 macOS 系统语音。
+- **本地 AI 音色**：支持 Kokoro；原生 Apple Silicon 还可下载 CosyVoice3 与 Qwen3-TTS（speech-swift/MLX）。也可使用 macOS 系统语音。
 - **可暂停、可恢复**：显示章节转换进度，长篇书籍可暂停后继续处理。
 - **隐私优先**：书籍解析、语音合成和 M4B 封装都在本机完成，书籍内容不会上传。
 
@@ -47,7 +47,8 @@ Release 应用使用 Developer ID Application 证书签名、启用 Hardened Run
 
 - macOS 26.0 或更高版本
 - Apple 芯片或 Intel Mac（Release 提供 Universal 2 应用）
-- Kokoro 模型需要由用户在应用内主动下载；模型权重不包含在仓库和安装包中
+- Kokoro 可在 Apple 芯片与 Intel Mac 使用；CosyVoice3/Qwen3-TTS 要求原生 Apple Silicon、Metal 与 macOS 15 或更高版本，Rosetta 下不可用
+- 所有模型都由用户在应用内主动下载；权重不包含在仓库和安装包中。CosyVoice3 约 1.12 GB，Qwen3-TTS（含 tokenizer）约 2.50 GB，安装还需要 staging 与安全余量
 
 ## 工作流程
 
@@ -55,11 +56,11 @@ Release 应用使用 Developer ID Application 证书签名、启用 Hardened Run
 EPUB → 安全解析章节 → 本地语音合成 → 合并音频 → 写入章节/封面/元数据 → M4B
 ```
 
-应用会限制 EPUB 解压规模并校验下载模型的完整性；Kokoro 推理通过随应用分发的 Universal 2 sherpa-onnx 与 ONNX Runtime 动态库在本机运行。
+应用会限制 EPUB 解压规模并校验下载模型的完整性。Kokoro 通过 Universal 2 sherpa-onnx/ONNX Runtime 运行；Apple Silicon 上的 CosyVoice3/Qwen3-TTS 通过固定版本的 speech-swift、MLX Swift 与随 Release 构建的 Metal library 运行。安装完成后试听与转换均可断网执行。
 
 ## 从源码构建
 
-需要 Xcode 26 或兼容版本：
+需要完整 Xcode 26 或兼容版本，并安装 Metal Toolchain：
 
 ```bash
 git clone https://github.com/shiye515/AudiobookMaker.git
@@ -74,13 +75,14 @@ xcodebuild build \
   -project AudiobookMaker.xcodeproj \
   -scheme AudiobookMaker \
   -configuration Debug \
+  -skipPackagePluginValidation \
   CODE_SIGNING_ALLOWED=NO
 ```
 
 项目主要模块：
 
 - `Services/EPUB`：EPUB 校验、解压、章节与元数据解析
-- `Services/TTS`：Apple Speech 与 Kokoro/sherpa-onnx 合成后端
+- `Services/TTS`：Apple Speech、Kokoro/sherpa-onnx 与 speech-swift/MLX 合成后端
 - `Services/Export`：M4B 音频、章节、封面及元数据写入
 - `Services/Persistence`：书库、任务状态与断点恢复
 
@@ -90,7 +92,7 @@ xcodebuild build \
 
 AudiobookMaker 不收集书籍内容或使用数据。仅当用户主动下载语音模型时才需要网络连接，详情见[隐私说明](docs/privacy.md)。
 
-项目分发的 sherpa-onnx、ONNX Runtime 以及外部模型资源各自适用其原始许可证，详见[第三方软件声明](docs/third-party-notices.md)与 [SBOM](docs/sbom.md)。
+项目分发的 sherpa-onnx、ONNX Runtime、speech-swift、MLX Swift 以及外部模型资源各自适用其原始许可证，详见[第三方软件声明](docs/third-party-notices.md)与 [SBOM](docs/sbom.json)。
 
 ## 参与贡献
 

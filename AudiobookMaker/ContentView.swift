@@ -176,14 +176,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .exportSelectedBook)) { _ in
             store.exportSelectedBook()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .selectSystemModel)) { _ in
-            store.section = .models; store.selectedModelID = TTSModelCatalog.systemID
-            store.makeSelectedModelDefault()
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .selectKokoroModel)) { _ in
-            store.section = .models; store.selectedModelID = TTSModelCatalog.kokoroID
-            if store.selectedModel?.isAvailable == true { store.makeSelectedModelDefault() }
-        }
+        .modifier(ModelSelectionCommandModifier(store: store))
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
             guard let window = note.object as? NSWindow else { return }
             let width = window.contentLayoutRect.width
@@ -254,6 +247,34 @@ struct ContentView: View {
             get: { store.isExporting },
             set: { _ in }
         )
+    }
+}
+
+private struct ModelSelectionCommandModifier: ViewModifier {
+    @Bindable var store: LibraryPresentationStore
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: .selectSystemModel)) { _ in
+                select(TTSModelCatalog.systemID, makeDefaultWhenAvailable: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .selectKokoroModel)) { _ in
+                select(TTSModelCatalog.kokoroID, makeDefaultWhenAvailable: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .selectCosyVoiceModel)) { _ in
+                select(TTSModelCatalog.cosyVoiceID, makeDefaultWhenAvailable: true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .selectQwen3TTSModel)) { _ in
+                select(TTSModelCatalog.qwen3TTSID, makeDefaultWhenAvailable: true)
+            }
+    }
+
+    private func select(_ modelID: String, makeDefaultWhenAvailable: Bool) {
+        store.section = .models
+        store.selectedModelID = modelID
+        if makeDefaultWhenAvailable, store.selectedModel?.isAvailable == true {
+            store.makeSelectedModelDefault()
+        }
     }
 }
 
@@ -615,6 +636,14 @@ private struct ModelDetailView: View {
     @Bindable var store: LibraryPresentationStore
     @State private var voiceSearch = ""
 
+    private var manifest: DownloadableModelManifest? {
+        TTSModelCatalog.manifestsByID[model.id]
+    }
+
+    private var isPlatformCompatible: Bool {
+        store.isPlatformCompatible(modelID: model.id)
+    }
+
     private var filteredVoices: [TTSVoiceDescriptor] {
         voiceSearch.isEmpty ? model.voices : model.voices.filter {
             $0.displayName.localizedStandardContains(voiceSearch) || $0.id.localizedStandardContains(voiceSearch)
@@ -644,9 +673,12 @@ private struct ModelDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            if model.id == TTSModelCatalog.kokoroID {
+            if manifest != nil {
                 Section("模型文件") {
-                    if model.installation == .downloading || model.installation == .verifying || model.installation == .installing {
+                    if !isPlatformCompatible {
+                        Label("需要原生 Apple Silicon、macOS 15 或更高版本及 Metal", systemImage: "apple.logo")
+                            .foregroundStyle(.secondary)
+                    } else if model.installation == .downloading || model.installation == .verifying || model.installation == .installing {
                         ProgressView(value: model.downloadProgress) {
                             Text(model.runtimeStatus)
                         } currentValueLabel: {
@@ -706,13 +738,17 @@ private struct ModelDetailView: View {
                 }
             }
             Section("许可") {
-                Link("sherpa-onnx · Apache-2.0", destination: URL(string: "https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.2/LICENSE")!)
-                Link("ONNX Runtime · MIT", destination: URL(string: "https://github.com/microsoft/onnxruntime/blob/v1.24.4/LICENSE")!)
                 if model.id == TTSModelCatalog.kokoroID {
+                    Link("sherpa-onnx · Apache-2.0", destination: URL(string: "https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.2/LICENSE")!)
+                    Link("ONNX Runtime · MIT", destination: URL(string: "https://github.com/microsoft/onnxruntime/blob/v1.24.4/LICENSE")!)
                     Link("Kokoro 模型与随包资源许可", destination: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models")!)
                     if model.installation == .installed {
                         Button("打开已安装模型的 LICENSE") { store.openSelectedModelLicense() }
                     }
+                } else if let manifest {
+                    Link("\(model.name) · \(manifest.licenseIdentifier)", destination: manifest.sourceURL)
+                    Link("speech-swift · Apache-2.0", destination: URL(string: "https://github.com/soniqo/speech-swift/blob/v0.0.23/LICENSE")!)
+                    Link("MLX Swift · MIT", destination: URL(string: "https://github.com/ml-explore/mlx-swift/blob/0.31.6/LICENSE")!)
                 }
             }
         }

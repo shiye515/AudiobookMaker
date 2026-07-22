@@ -12,7 +12,7 @@ struct SettingsView: View {
                     Text("1（推荐）").tag(1)
                     Text("2").tag(2)
                 }
-                Text("Kokoro 在 Intel 与 Apple 芯片上都使用 CPU 推理，并会将并发限制为 1。")
+                Text("Kokoro 使用 CPU；CosyVoice3 与 Qwen3-TTS 需要原生 Apple Silicon 和 Metal。高内存本地模型会将安全并发限制为 1。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -23,7 +23,7 @@ struct SettingsView: View {
                 )) {
                     ForEach(store.models.filter(\.isAvailable)) { model in Text(model.name).tag(model.id) }
                 }
-                Text("Kokoro 模型需在“模型”页面单独下载；权重不包含在 App 中。")
+                Text("可下载模型需在“模型”页面单独安装；所有权重都位于 App bundle 之外，合成时不会联网。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

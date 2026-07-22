@@ -33,9 +33,18 @@ struct KokoroIntegrationTests {
 
     @Test func applicationBundleDoesNotContainModelWeights() throws {
         let enumerator = FileManager.default.enumerator(at: Bundle.main.bundleURL, includingPropertiesForKeys: nil)
-        let forbidden = ["model.int8.onnx", "voices.bin", "kokoro-int8-multi-lang-v1_1"]
+        let forbidden = [
+            "model.int8.onnx", "voices.bin", "kokoro-int8-multi-lang-v1_1",
+            "model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors",
+            "flow.pt", "hift.pt", "campplus.onnx", "speech_tokenizer_v1.onnx",
+        ]
         while let url = enumerator?.nextObject() as? URL {
             #expect(!forbidden.contains(where: { url.lastPathComponent.localizedCaseInsensitiveContains($0) }))
+        }
+        let metallib = Bundle.main.bundleURL.appending(path: "Contents/Resources/MLX/mlx.metallib")
+        #expect(FileManager.default.fileExists(atPath: metallib.path))
+        if FileManager.default.fileExists(atPath: metallib.path) {
+            #expect((try metallib.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0) > 0)
         }
     }
 
@@ -203,23 +212,6 @@ struct KokoroIntegrationTests {
         )
         Attachment.record(report, named: "Kokoro 官方下载安装验收.txt")
         try? FileManager.default.removeItem(at: sentinel)
-    }
-
-    @Test func productionSourcesContainNoRemovedRuntimeEntry() throws {
-        let repositoryRoot = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().deletingLastPathComponent()
-        let roots = [
-            repositoryRoot.appending(path: "AudiobookMaker"),
-        ]
-        let forbidden = ["cosy" + "voice", "mlx"]
-        for root in roots {
-            let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey])
-            while let url = files?.nextObject() as? URL {
-                guard ["swift", "xcstrings"].contains(url.pathExtension) else { continue }
-                let contents = try String(contentsOf: url, encoding: .utf8).lowercased()
-                #expect(!forbidden.contains(where: contents.contains), "Removed runtime entry remains in \(url.path)")
-            }
-        }
     }
 
     @Test @MainActor func realKokoroSmokeTestWhenArchiveIsProvided() async throws {

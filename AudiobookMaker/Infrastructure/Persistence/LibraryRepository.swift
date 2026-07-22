@@ -29,19 +29,27 @@ actor LibraryRepository {
         if try modelContext.fetchCount(settingDescriptor) == 0 {
             modelContext.insert(AppSettingRecord())
         }
-        let legacyIDs = ["aufklarer/" + "Cosy" + "Voice3-0.5B-" + "M" + "LX-8bit-full", "cosy" + "voice", "cosy" + "voice3"]
+        let legacyIDs = [
+            "aufklarer/" + "Cosy" + "Voice3-0.5B-" + "M" + "LX-8bit-full",
+            "cosy" + "voice",
+            "cosy" + "voice3",
+            "m" + "lx"
+        ]
+        let isLegacyID: (String) -> Bool = { value in
+            legacyIDs.contains { $0.caseInsensitiveCompare(value) == .orderedSame }
+        }
         let existingSettings = try modelContext.fetch(FetchDescriptor<AppSettingRecord>())
-        for setting in existingSettings where legacyIDs.contains(where: { setting.selectedModelID.localizedCaseInsensitiveContains($0) }) {
+        for setting in existingSettings where isLegacyID(setting.selectedModelID) {
             setting.selectedModelID = Self.systemVoiceID
             setting.selectedModelVersion = "system"
             setting.selectedVoiceID = nil
         }
         let existingJobs = try modelContext.fetch(FetchDescriptor<ConversionJobRecord>())
-        for job in existingJobs where legacyIDs.contains(where: { job.modelID.localizedCaseInsensitiveContains($0) }) {
+        for job in existingJobs where isLegacyID(job.modelID) {
             job.legacyRuntimeDiagnostic = "Migrated unsupported legacy runtime: \(job.modelID)"
         }
         let legacyModels = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
-        for model in legacyModels where legacyIDs.contains(where: { model.id.localizedCaseInsensitiveContains($0) }) {
+        for model in legacyModels where isLegacyID(model.id) {
             modelContext.delete(model)
         }
 
@@ -96,8 +104,58 @@ actor LibraryRepository {
                 )
             )
         }
+
+        let speechSwiftSupported = SpeechSwiftPlatformSupport().status().isSupported
+        let speechModels: [(DownloadableModelManifest, [TTSVoiceDescriptor], String)] = [
+            (TTSModelCatalog.cosyVoice, TTSModelCatalog.cosyVoiceVoices, "default"),
+            (TTSModelCatalog.qwen3TTS, TTSModelCatalog.qwen3TTSVoices, "vivian")
+        ]
+        for (manifest, voices, defaultVoiceID) in speechModels {
+            let id = manifest.id
+            let descriptor = FetchDescriptor<TTSModelRecord>(predicate: #Predicate { $0.id == id })
+            let voicesData = try JSONEncoder().encode(voices)
+            if let record = try modelContext.fetch(descriptor).first {
+                record.displayName = manifest.displayName
+                record.frameworkRaw = "speech-swift / MLX"
+                record.source = manifest.sourceURL.absoluteString
+                record.version = manifest.version
+                record.downloadSize = manifest.downloadBytes
+                record.voicesData = voicesData
+                if !voices.contains(where: { $0.id == record.selectedVoiceID }) {
+                    record.selectedVoiceID = defaultVoiceID
+                }
+                if !speechSwiftSupported {
+                    record.runtimeRaw = ModelRuntimeState.unavailable.rawValue
+                } else if record.installationRaw == ModelInstallationState.installed.rawValue {
+                    record.runtimeRaw = ModelRuntimeState.ready.rawValue
+                } else {
+                    record.runtimeRaw = ModelRuntimeState.unloaded.rawValue
+                }
+            } else {
+                let record = TTSModelRecord(
+                    id: id,
+                    displayName: manifest.displayName,
+                    frameworkRaw: "speech-swift / MLX",
+                    source: manifest.sourceURL.absoluteString,
+                    isDefault: false,
+                    installationRaw: ModelInstallationState.notInstalled.rawValue,
+                    runtimeRaw: speechSwiftSupported
+                        ? ModelRuntimeState.unloaded.rawValue
+                        : ModelRuntimeState.unavailable.rawValue
+                )
+                record.version = manifest.version
+                record.downloadSize = manifest.downloadBytes
+                record.selectedVoiceID = defaultVoiceID
+                record.voicesData = voicesData
+                modelContext.insert(record)
+            }
+        }
         let allModels = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
-        if !allModels.contains(where: { $0.isDefault && ($0.id == systemVoiceID || ($0.id == Self.kokoroID && $0.installationRaw == "installed")) }) {
+        if !allModels.contains(where: {
+            $0.isDefault
+                && $0.installationRaw == ModelInstallationState.installed.rawValue
+                && $0.runtimeRaw != ModelRuntimeState.unavailable.rawValue
+        }) {
             for model in allModels { model.isDefault = model.id == systemVoiceID }
         }
         if let defaultKokoro = allModels.first(where: { $0.id == modelID && $0.isDefault }) {
@@ -284,6 +342,15 @@ actor LibraryRepository {
                         )
                     }
             )
+        }
+    }
+
+    func hasUnfinishedJob(modelID: String, modelVersion: String) throws -> Bool {
+        let descriptor = FetchDescriptor<ConversionJobRecord>(predicate: #Predicate {
+            $0.modelID == modelID && $0.modelVersion == modelVersion
+        })
+        return try modelContext.fetch(descriptor).contains {
+            $0.state != .completed && $0.state != .cancelled
         }
     }
 

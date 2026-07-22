@@ -76,11 +76,14 @@ final class DependencyContainer {
         self.modelManager = ModelPackageManager(
             directories: directories,
             eventHandler: { [repository] event in
-                try? await repository.updateModelInstallState(id: TTSModelCatalog.kokoroID, event: event)
+                try? await repository.updateModelInstallState(id: event.modelID, event: event)
             },
             runtimeProbe: { manifest in
                 let capabilities = try await runtime.capabilities(for: manifest.id)
                 guard capabilities.version == manifest.version else { throw RuntimeError.incompatibleRuntime }
+            },
+            referenceCheck: { [repository] modelID, version in
+                try await repository.hasUnfinishedJob(modelID: modelID, modelVersion: version)
             }
         )
         self.converter = ConversionCoordinator(

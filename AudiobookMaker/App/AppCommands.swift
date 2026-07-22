@@ -9,6 +9,8 @@ extension Notification.Name {
     static let exportSelectedBook = Notification.Name("AudiobookMaker.exportSelectedBook")
     static let selectSystemModel = Notification.Name("AudiobookMaker.selectSystemModel")
     static let selectKokoroModel = Notification.Name("AudiobookMaker.selectKokoroModel")
+    static let selectCosyVoiceModel = Notification.Name("AudiobookMaker.selectCosyVoiceModel")
+    static let selectQwen3TTSModel = Notification.Name("AudiobookMaker.selectQwen3TTSModel")
 }
 
 struct AppCommands: Commands {
@@ -54,6 +56,8 @@ struct AppCommands: Commands {
         CommandMenu("Model") {
             Button("Apple 系统语音") { post(.selectSystemModel) }
             Button("Kokoro 多语言 Int8") { post(.selectKokoroModel) }
+            Button("CosyVoice3 0.5B MLX 8-bit") { post(.selectCosyVoiceModel) }
+            Button("Qwen3-TTS 0.6B CustomVoice") { post(.selectQwen3TTSModel) }
             Divider()
             SettingsLink { Text("模型设置…") }
         }

@@ -80,7 +80,7 @@ nonisolated struct AppDirectories: Sendable {
 
     private func safeModelComponent(_ value: String) throws -> String {
         guard !value.isEmpty,
-              value.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil,
+              value.range(of: "^[A-Za-z0-9._+-]+$", options: .regularExpression) != nil,
               value != ".", value != ".." else {
             throw AppDirectoryError.unsafeRelativePath
         }

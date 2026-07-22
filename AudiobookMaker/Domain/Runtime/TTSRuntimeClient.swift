@@ -1,6 +1,22 @@
 import AVFoundation
 import Foundation
 
+nonisolated enum RuntimePlatformRequirement: String, Codable, Equatable, Sendable {
+    case anyMac
+    case nativeAppleSilicon
+}
+
+nonisolated enum RuntimeMemoryTier: String, Codable, Equatable, Sendable {
+    case low
+    case medium
+    case high
+}
+
+nonisolated enum RuntimeCancellationBoundary: String, Codable, Equatable, Sendable {
+    case immediate
+    case safeChunkBoundary
+}
+
 nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
     let runtimeID: String
     let displayName: String
@@ -11,6 +27,10 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
     let outputFileType: String
     let supportedLanguages: [String]
     let voices: [TTSVoiceDescriptor]
+    let platformRequirement: RuntimePlatformRequirement
+    let maximumTokenBudget: Int?
+    let memoryTier: RuntimeMemoryTier
+    let cancellationBoundary: RuntimeCancellationBoundary
 
     init(
         runtimeID: String,
@@ -21,7 +41,11 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
         supportsImmediateCancellation: Bool,
         outputFileType: String = "caf",
         supportedLanguages: [String] = [],
-        voices: [TTSVoiceDescriptor] = []
+        voices: [TTSVoiceDescriptor] = [],
+        platformRequirement: RuntimePlatformRequirement = .anyMac,
+        maximumTokenBudget: Int? = nil,
+        memoryTier: RuntimeMemoryTier = .low,
+        cancellationBoundary: RuntimeCancellationBoundary? = nil
     ) {
         self.runtimeID = runtimeID
         self.displayName = displayName
@@ -32,6 +56,11 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
         self.outputFileType = outputFileType
         self.supportedLanguages = supportedLanguages
         self.voices = voices
+        self.platformRequirement = platformRequirement
+        self.maximumTokenBudget = maximumTokenBudget
+        self.memoryTier = memoryTier
+        self.cancellationBoundary = cancellationBoundary
+            ?? (supportsImmediateCancellation ? .immediate : .safeChunkBoundary)
     }
 }
 

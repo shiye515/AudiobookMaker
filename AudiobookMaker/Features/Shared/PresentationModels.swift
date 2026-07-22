@@ -184,6 +184,7 @@ final class LibraryPresentationStore {
     private let trash: TrashCoordinator?
     private let modelManager: ModelPackageManager?
     private let runtime: (any TTSRuntimeClient)?
+    private let speechSwiftPlatformSupport: SpeechSwiftPlatformSupport
     private var hasLoaded = false
     private var deletionCleanupTask: Task<Void, Never>?
     private var exportTask: Task<Void, Never>?
@@ -192,7 +193,10 @@ final class LibraryPresentationStore {
     private var previewPlayer: AVAudioPlayer?
     private var previewURL: URL?
 
-    init(mode: Mode = .populated) {
+    init(
+        mode: Mode = .populated,
+        speechSwiftPlatformSupport: SpeechSwiftPlatformSupport = SpeechSwiftPlatformSupport()
+    ) {
         repository = nil
         importer = nil
         directories = nil
@@ -202,6 +206,7 @@ final class LibraryPresentationStore {
         trash = nil
         modelManager = nil
         runtime = nil
+        self.speechSwiftPlatformSupport = speechSwiftPlatformSupport
         var initialBooks = mode == .empty ? [] : Self.previewBooks
         if !initialBooks.isEmpty {
             switch mode {
@@ -226,7 +231,10 @@ final class LibraryPresentationStore {
         selectedModelID = models.first?.id
     }
 
-    init(dependencies: DependencyContainer) {
+    init(
+        dependencies: DependencyContainer,
+        speechSwiftPlatformSupport: SpeechSwiftPlatformSupport = SpeechSwiftPlatformSupport()
+    ) {
         repository = dependencies.repository
         importer = dependencies.importer
         directories = dependencies.directories
@@ -236,9 +244,17 @@ final class LibraryPresentationStore {
         trash = dependencies.trash
         modelManager = dependencies.modelManager
         runtime = dependencies.runtime
+        self.speechSwiftPlatformSupport = speechSwiftPlatformSupport
         books = []
-        models = Self.liveModels
+        models = Self.liveModels(platformSupport: speechSwiftPlatformSupport)
         selectedModelID = models.first?.id
+    }
+
+    func isPlatformCompatible(modelID: String) -> Bool {
+        guard TTSModelCatalog.manifestsByID[modelID]?.platformRequirement == .nativeAppleSilicon else {
+            return true
+        }
+        return speechSwiftPlatformSupport.status().isSupported
     }
 
     var selectedBook: BookSnapshot? {
@@ -273,9 +289,8 @@ final class LibraryPresentationStore {
     func modelLabel(for book: BookSnapshot) -> String {
         let modelID = book.modelID ?? models.first(where: \.isDefault)?.id
         let name = models.first(where: { $0.id == modelID })?.name
-            ?? (modelID == TTSModelCatalog.kokoroID
-                ? TTSModelCatalog.kokoro.displayName
-                : String(localized: "Apple 系统语音"))
+            ?? modelID.flatMap { TTSModelCatalog.manifestsByID[$0]?.displayName }
+            ?? String(localized: "Apple 系统语音")
         return "\(name) · \(String(localized: "本机运行"))"
     }
 
@@ -413,7 +428,14 @@ final class LibraryPresentationStore {
     }
 
     func installSelectedModel() {
-        guard selectedModelID == TTSModelCatalog.kokoroID, let modelManager else { return }
+        guard let selectedModelID,
+              let manifest = TTSModelCatalog.manifestsByID[selectedModelID],
+              let modelManager else { return }
+        if manifest.platformRequirement == .nativeAppleSilicon,
+           !speechSwiftPlatformSupport.status().isSupported {
+            importErrorMessage = ModelPackageError.incompatiblePlatform.localizedDescription
+            return
+        }
         modelTask?.cancel()
         modelTask = Task {
             let refresh = Task { @MainActor [weak self] in
@@ -423,7 +445,7 @@ final class LibraryPresentationStore {
                 }
             }
             defer { refresh.cancel() }
-            do { try await modelManager.install() }
+            do { try await modelManager.install(manifest) }
             catch ModelPackageError.cancelled { }
             catch { importErrorMessage = error.localizedDescription }
             await reloadModels()
@@ -432,8 +454,8 @@ final class LibraryPresentationStore {
     }
 
     func cancelModelInstall() {
-        guard let modelManager else { return }
-        Task { await modelManager.cancel() }
+        guard let modelManager, let selectedModelID else { return }
+        Task { await modelManager.cancel(modelID: selectedModelID) }
     }
 
     func selectVoice(_ voiceID: String) {
@@ -496,11 +518,16 @@ final class LibraryPresentationStore {
 
     func openSelectedModelLicense() {
         guard let directories, let model = selectedModel,
-              model.id == TTSModelCatalog.kokoroID,
-              let root = try? directories.modelVersionDirectory(id: model.id, version: model.version) else { return }
-        let license = root.appending(path: "LICENSE")
-        guard FileManager.default.fileExists(atPath: license.path) else { return }
-        NSWorkspace.shared.open(license)
+              let manifest = TTSModelCatalog.manifestsByID[model.id] else { return }
+        if model.id == TTSModelCatalog.kokoroID,
+           let root = try? directories.modelVersionDirectory(id: model.id, version: model.version) {
+            let license = root.appending(path: "LICENSE")
+            if FileManager.default.fileExists(atPath: license.path) {
+                NSWorkspace.shared.open(license)
+                return
+            }
+        }
+        NSWorkspace.shared.open(manifest.sourceURL)
     }
 
     func exportSelectedBook() {
@@ -598,13 +625,23 @@ final class LibraryPresentationStore {
             if let modelManager {
                 try await modelManager.recoverStaging()
                 let persistedModels = try await repository.models()
-                if persistedModels.first(where: { $0.id == TTSModelCatalog.kokoroID })?.installation == .installed {
+                for model in persistedModels where model.installation == .installed {
+                    guard let manifest = TTSModelCatalog.manifestsByID[model.id] else { continue }
+                    if manifest.platformRequirement == .nativeAppleSilicon,
+                       !speechSwiftPlatformSupport.status().isSupported {
+                        continue
+                    }
                     do {
-                        _ = try await modelManager.validate()
+                        _ = try await modelManager.validate(manifest)
                     } catch {
                         try await repository.updateModelInstallState(
-                            id: TTSModelCatalog.kokoroID,
-                            event: .init(state: .corrupted, progress: 0, message: error.localizedDescription)
+                            id: model.id,
+                            event: .init(
+                                modelID: model.id,
+                                state: .corrupted,
+                                progress: 0,
+                                message: error.localizedDescription
+                            )
                         )
                     }
                 }
@@ -614,6 +651,13 @@ final class LibraryPresentationStore {
                     id: TTSModelCatalog.kokoroID,
                     event: .init(state: .installed, progress: 1, message: nil)
                 )
+            } else if ProcessInfo.processInfo.arguments.contains("--uitest-speech-swift-ready") {
+                for modelID in [TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID] {
+                    try await repository.updateModelInstallState(
+                        id: modelID,
+                        event: .init(modelID: modelID, state: .installed, progress: 1, message: nil)
+                    )
+                }
             } else if ProcessInfo.processInfo.arguments.contains("--uitest-model-not-installed") {
                 try await repository.updateModelInstallState(
                     id: TTSModelCatalog.kokoroID,
@@ -648,6 +692,10 @@ final class LibraryPresentationStore {
                 }
             } else {
                 await reloadBooks(selecting: nil)
+            }
+            if ProcessInfo.processInfo.arguments.contains("--uitest-preview-busy") {
+                books = Self.previewBooks
+                selectedBookID = books.first?.id
             }
         } catch {
             importErrorMessage = error.localizedDescription
@@ -779,8 +827,10 @@ final class LibraryPresentationStore {
             // returns so a click made while the refresh was suspended wins.
             let currentlySelectedModelID = selectedModelID
             models = snapshots.map { model in
-                let available = model.runtime == .ready
+                let platformCompatible = isPlatformCompatible(modelID: model.id)
+                let available = model.runtime == .ready && platformCompatible
                 let runtimeStatus: String = switch (model.installation, model.runtime) {
+                case _ where !platformCompatible: String(localized: "需要原生 Apple Silicon")
                 case (_, .ready): String(localized: "已就绪")
                 case (.notInstalled, _): String(localized: "未安装")
                 case (.installed, .unloaded): String(localized: "未加载")
@@ -790,6 +840,12 @@ final class LibraryPresentationStore {
                 case (.failed, _): String(localized: "安装失败")
                 case (.corrupted, _): String(localized: "模型已损坏")
                 default: String(localized: "当前设备不可用")
+                }
+                let voices: [TTSVoiceDescriptor] = switch model.id {
+                case TTSModelCatalog.kokoroID: TTSModelCatalog.kokoroVoices
+                case TTSModelCatalog.cosyVoiceID: TTSModelCatalog.cosyVoiceVoices
+                case TTSModelCatalog.qwen3TTSID: TTSModelCatalog.qwen3TTSVoices
+                default: []
                 }
                 return TTSModelSnapshot(
                     id: model.id,
@@ -802,12 +858,12 @@ final class LibraryPresentationStore {
                     isAvailable: available,
                     isDefault: model.isDefault,
                     version: model.version,
-                    installation: model.installation,
+                    installation: platformCompatible ? model.installation : .unavailable,
                     downloadProgress: model.downloadProgress,
                     failureMessage: model.failureMessage,
                     downloadSize: model.downloadSize,
                     selectedVoiceID: model.selectedVoiceID,
-                    voices: model.id == TTSModelCatalog.kokoroID ? TTSModelCatalog.kokoroVoices : []
+                    voices: voices
                 )
             }
             selectedModelID = models.contains(where: { $0.id == currentlySelectedModelID })
@@ -933,10 +989,32 @@ final class LibraryPresentationStore {
             failureMessage: nil, downloadSize: TTSModelCatalog.kokoro.downloadBytes,
             selectedVoiceID: "zf_001", voices: TTSModelCatalog.kokoroVoices
         ),
+        TTSModelSnapshot(
+            id: TTSModelCatalog.cosyVoiceID,
+            name: TTSModelCatalog.cosyVoice.displayName,
+            framework: "speech-swift / MLX", runtimeStatus: "未安装",
+            languages: "中文、英文、日文、韩文", isAvailable: false, isDefault: false,
+            version: TTSModelCatalog.cosyVoice.version, installation: .notInstalled,
+            downloadProgress: 0, failureMessage: nil,
+            downloadSize: TTSModelCatalog.cosyVoice.downloadBytes,
+            selectedVoiceID: "default", voices: TTSModelCatalog.cosyVoiceVoices
+        ),
+        TTSModelSnapshot(
+            id: TTSModelCatalog.qwen3TTSID,
+            name: TTSModelCatalog.qwen3TTS.displayName,
+            framework: "speech-swift / MLX", runtimeStatus: "未安装",
+            languages: "中文、英文、日文、韩文", isAvailable: false, isDefault: false,
+            version: TTSModelCatalog.qwen3TTS.version, installation: .notInstalled,
+            downloadProgress: 0, failureMessage: nil,
+            downloadSize: TTSModelCatalog.qwen3TTS.downloadBytes,
+            selectedVoiceID: "vivian", voices: TTSModelCatalog.qwen3TTSVoices
+        ),
     ]
 
-    private static let liveModels: [TTSModelSnapshot] = [
-        TTSModelSnapshot(
+    private static func liveModels(
+        platformSupport: SpeechSwiftPlatformSupport
+    ) -> [TTSModelSnapshot] {
+        [TTSModelSnapshot(
             id: "com.audiobookmaker.apple-system-speech",
             name: "Apple 系统语音", framework: "AVFoundation",
             runtimeStatus: "已就绪", languages: "随 macOS 已安装语音", isAvailable: true, isDefault: true
@@ -950,8 +1028,45 @@ final class LibraryPresentationStore {
             version: TTSModelCatalog.kokoro.version, installation: .notInstalled, downloadProgress: 0,
             failureMessage: nil, downloadSize: TTSModelCatalog.kokoro.downloadBytes,
             selectedVoiceID: "zf_001", voices: TTSModelCatalog.kokoroVoices
+        ),
+        speechSwiftInitialModel(
+            TTSModelCatalog.cosyVoice,
+            voices: TTSModelCatalog.cosyVoiceVoices,
+            defaultVoiceID: "default",
+            platformSupport: platformSupport
+        ),
+        speechSwiftInitialModel(
+            TTSModelCatalog.qwen3TTS,
+            voices: TTSModelCatalog.qwen3TTSVoices,
+            defaultVoiceID: "vivian",
+            platformSupport: platformSupport
+        )]
+    }
+
+    private static func speechSwiftInitialModel(
+        _ manifest: DownloadableModelManifest,
+        voices: [TTSVoiceDescriptor],
+        defaultVoiceID: String,
+        platformSupport: SpeechSwiftPlatformSupport
+    ) -> TTSModelSnapshot {
+        let supported = platformSupport.status().isSupported
+        return TTSModelSnapshot(
+            id: manifest.id,
+            name: manifest.displayName,
+            framework: "speech-swift / MLX",
+            runtimeStatus: supported ? "未安装" : "需要原生 Apple Silicon",
+            languages: "中文、英文、日文、韩文",
+            isAvailable: false,
+            isDefault: false,
+            version: manifest.version,
+            installation: supported ? .notInstalled : .unavailable,
+            downloadProgress: 0,
+            failureMessage: supported ? nil : "需要原生 Apple Silicon、macOS 15 或更高版本及 Metal",
+            downloadSize: manifest.downloadBytes,
+            selectedVoiceID: defaultVoiceID,
+            voices: voices
         )
-    ]
+    }
 
     private static func makeChapters(
         count: Int,

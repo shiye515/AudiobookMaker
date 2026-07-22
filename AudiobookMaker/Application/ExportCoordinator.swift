@@ -182,10 +182,16 @@ nonisolated struct ExportCoordinator: Sendable {
     }
 
     private func narratorName(modelID: String, voiceID: String?) -> String {
-        if modelID == TTSModelCatalog.kokoroID {
-            return TTSModelCatalog.kokoroVoices.first(where: { $0.id == voiceID })?.displayName
+        let voices: [TTSVoiceDescriptor] = switch modelID {
+        case TTSModelCatalog.kokoroID: TTSModelCatalog.kokoroVoices
+        case TTSModelCatalog.cosyVoiceID: TTSModelCatalog.cosyVoiceVoices
+        case TTSModelCatalog.qwen3TTSID: TTSModelCatalog.qwen3TTSVoices
+        default: []
+        }
+        if let manifest = TTSModelCatalog.manifestsByID[modelID] {
+            return voices.first(where: { $0.id == voiceID })?.displayName
                 ?? voiceID
-                ?? TTSModelCatalog.kokoro.displayName
+                ?? manifest.displayName
         }
         return String(localized: "Apple 系统语音")
     }

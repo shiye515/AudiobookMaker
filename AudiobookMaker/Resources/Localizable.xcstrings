@@ -446,6 +446,9 @@
         }
       }
     },
+    "CosyVoice3 0.5B MLX 8-bit" : {
+
+    },
     "Hello. This is a local voice preview from AudiobookMaker." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -474,7 +477,11 @@
         }
       }
     },
+    "Kokoro 使用 CPU；CosyVoice3 与 Qwen3-TTS 需要原生 Apple Silicon 和 Metal。高内存本地模型会将安全并发限制为 1。" : {
+
+    },
     "Kokoro 在 Intel 与 Apple 芯片上都使用 CPU 推理，并会将并发限制为 1。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -505,6 +512,7 @@
       }
     },
     "Kokoro 模型需在“模型”页面单独下载；权重不包含在 App 中。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -544,6 +552,9 @@
         }
       }
     },
+    "MLX Swift · MIT" : {
+
+    },
     "Model" : {
       "localizations" : {
         "en" : {
@@ -564,6 +575,9 @@
         }
       }
     },
+    "Qwen3-TTS 0.6B CustomVoice" : {
+
+    },
     "sherpa-onnx · Apache-2.0" : {
       "localizations" : {
         "en" : {
@@ -573,6 +587,9 @@
           }
         }
       }
+    },
+    "speech-swift · Apache-2.0" : {
+
     },
     "unknown.author" : {
       "extractionState" : "stale",
@@ -853,6 +870,9 @@
           }
         }
       }
+    },
+    "可下载模型需在“模型”页面单独安装；所有权重都位于 App bundle 之外，合成时不会联网。" : {
+
     },
     "可以从已保存的进度继续转换。" : {
       "localizations" : {
@@ -2368,6 +2388,12 @@
           }
         }
       }
+    },
+    "需要原生 Apple Silicon" : {
+
+    },
+    "需要原生 Apple Silicon、macOS 15 或更高版本及 Metal" : {
+
     },
     "需要处理" : {
       "localizations" : {

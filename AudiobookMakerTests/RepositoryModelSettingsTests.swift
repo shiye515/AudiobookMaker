@@ -16,6 +16,8 @@ struct RepositoryModelSettingsTests {
         let initial = try await dependencies.repository.models()
         #expect(initial.contains { $0.id == LibraryRepository.systemVoiceID })
         #expect(initial.contains { $0.id == LibraryRepository.kokoroID })
+        #expect(initial.contains { $0.id == TTSModelCatalog.cosyVoiceID })
+        #expect(initial.contains { $0.id == TTSModelCatalog.qwen3TTSID })
         #expect(initial.count(where: \.isDefault) == 1)
         #expect(initial.first(where: \.isDefault)?.id == LibraryRepository.systemVoiceID)
         #expect(initial.first(where: { $0.id == LibraryRepository.kokoroID })?.installation == .notInstalled)
@@ -48,6 +50,40 @@ struct RepositoryModelSettingsTests {
             selectedModelVersion: TTSModelCatalog.kokoro.version,
             selectedVoiceID: "zf_001"
         ))
+    }
+
+    @Test @MainActor
+    func speechSwiftVoiceSelectionPersistsPerStableModelID() async throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dependencies = try DependencyContainer(inMemory: true, rootOverride: root)
+        try await dependencies.repository.seedDefaults()
+
+        try await dependencies.repository.updateModelInstallState(
+            id: TTSModelCatalog.qwen3TTSID,
+            event: .init(
+                modelID: TTSModelCatalog.qwen3TTSID,
+                state: .installed,
+                progress: 1,
+                message: nil
+            )
+        )
+        try await dependencies.repository.setVoice(modelID: TTSModelCatalog.qwen3TTSID, voiceID: "aiden")
+        try await dependencies.repository.updateSettings(
+            maxConcurrentJobs: 1,
+            selectedModelID: TTSModelCatalog.qwen3TTSID,
+            keepIntermediatePCM: false
+        )
+        try await dependencies.repository.seedDefaults()
+
+        #expect(try await dependencies.repository.voices(modelID: TTSModelCatalog.qwen3TTSID) == TTSModelCatalog.qwen3TTSVoices)
+        let settings = try await dependencies.repository.settings()
+        #expect(settings.selectedModelID == TTSModelCatalog.qwen3TTSID)
+        #expect(settings.selectedModelVersion == TTSModelCatalog.qwen3TTS.version)
+        #expect(settings.selectedVoiceID == "aiden")
+        #expect(try await dependencies.repository.models().first(where: {
+            $0.id == TTSModelCatalog.cosyVoiceID
+        })?.selectedVoiceID == "default")
     }
 
     @Test @MainActor
@@ -142,5 +178,15 @@ struct RepositoryModelSettingsTests {
         try await dependencies.repository.setVoice(modelID: TTSModelCatalog.kokoroID, voiceID: "zf_002")
         #expect(try await dependencies.repository.jobSelection(id: jobID) == locked)
         #expect(try await dependencies.repository.books().first?.modelID == TTSModelCatalog.kokoroID)
+        #expect(try await dependencies.repository.hasUnfinishedJob(
+            modelID: locked.modelID,
+            modelVersion: locked.modelVersion
+        ))
+        try await dependencies.repository.transitionJob(id: jobID, to: .cancelled)
+        let remainsReferenced = try await dependencies.repository.hasUnfinishedJob(
+            modelID: locked.modelID,
+            modelVersion: locked.modelVersion
+        )
+        #expect(!remainsReferenced)
     }
 }

@@ -40,7 +40,7 @@ struct SpeechSwiftRealAcceptanceTests {
         let modelRoot = try await dependencies.modelManager.validate(manifest)
         try await dependencies.repository.updateModelInstallState(
             id: modelID,
-            event: ModelInstallEvent(state: .installed, progress: 1, message: nil)
+            event: ModelInstallEvent(modelID: modelID, state: .installed, progress: 1, message: nil)
         )
         let voice = modelID == TTSModelCatalog.cosyVoiceID ? "default" : "vivian"
         try await dependencies.repository.setVoice(modelID: modelID, voiceID: voice)

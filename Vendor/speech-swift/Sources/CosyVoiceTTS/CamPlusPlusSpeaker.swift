@@ -1,4 +1,4 @@
-#if canImport(CoreML) && arch(arm64)
+#if canImport(CoreML)
 import CoreML
 import Foundation
 import AVFoundation
@@ -151,36 +151,5 @@ public final class CamPlusPlusSpeaker {
         return embedding
     }
 
-}
-#elseif canImport(CoreML)
-import Foundation
-import AudioCommon
-
-/// Compile-only Intel surface for an optional voice-cloning component.
-/// AudiobookMaker rejects speech-swift before constructing a session on x86_64.
-public final class CamPlusPlusSpeaker {
-    public static let defaultModelId = "aufklarer/CamPlusPlus-Speaker-CoreML"
-    public static let embeddingDim = 192
-
-    private init() {}
-
-    public static func fromPretrained(
-        modelId: String = CamPlusPlusSpeaker.defaultModelId,
-        cacheDir: URL? = nil,
-        offlineMode: Bool = false,
-        progressHandler: ((Double, String) -> Void)? = nil
-    ) async throws -> CamPlusPlusSpeaker {
-        throw AudioModelError.modelLoadFailed(
-            modelId: modelId,
-            reason: "CAM++ is unavailable on Intel macOS"
-        )
-    }
-
-    public func embed(audio: [Float], sampleRate: Int = 16000) throws -> [Float] {
-        throw AudioModelError.modelLoadFailed(
-            modelId: Self.defaultModelId,
-            reason: "CAM++ is unavailable on Intel macOS"
-        )
-    }
 }
 #endif

@@ -475,9 +475,7 @@ final class LibraryPresentationStore {
               let runtime, let directories else { return }
         stopVoicePreview()
         let voice = model.voices.first(where: { $0.id == model.selectedVoiceID })
-        // Keep preview text in the selected voice's language and within Kokoro's
-        // known lexicon. The product name produces the unsupported English `ɚ`
-        // phoneme, while `〇` is converted to Kokoro's unknown-token marker.
+        // Keep preview text in the selected voice's language.
         let sample = voice?.languageCode == "en-US"
             ? "Hello. This is a local voice sample."
             : "你好，这是本地音色试听。"
@@ -517,16 +515,7 @@ final class LibraryPresentationStore {
     }
 
     func openSelectedModelLicense() {
-        guard let directories, let model = selectedModel,
-              let manifest = TTSModelCatalog.manifestsByID[model.id] else { return }
-        if model.id == TTSModelCatalog.kokoroID,
-           let root = try? directories.modelVersionDirectory(id: model.id, version: model.version) {
-            let license = root.appending(path: "LICENSE")
-            if FileManager.default.fileExists(atPath: license.path) {
-                NSWorkspace.shared.open(license)
-                return
-            }
-        }
+        guard let manifest = selectedModel.flatMap({ TTSModelCatalog.manifestsByID[$0.id] }) else { return }
         NSWorkspace.shared.open(manifest.sourceURL)
     }
 
@@ -622,6 +611,13 @@ final class LibraryPresentationStore {
         hasLoaded = true
         do {
             try await repository.seedDefaults()
+            if let directories {
+                do {
+                    _ = try directories.removeLegacyKokoroArtifacts()
+                } catch {
+                    importErrorMessage = "旧 Kokoro 模型文件未删除：\(error.localizedDescription)"
+                }
+            }
             if let modelManager {
                 try await modelManager.recoverStaging()
                 let persistedModels = try await repository.models()
@@ -646,12 +642,7 @@ final class LibraryPresentationStore {
                     }
                 }
             }
-            if ProcessInfo.processInfo.arguments.contains("--uitest-kokoro-ready") {
-                try await repository.updateModelInstallState(
-                    id: TTSModelCatalog.kokoroID,
-                    event: .init(state: .installed, progress: 1, message: nil)
-                )
-            } else if ProcessInfo.processInfo.arguments.contains("--uitest-speech-swift-ready") {
+            if ProcessInfo.processInfo.arguments.contains("--uitest-speech-swift-ready") {
                 for modelID in [TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID] {
                     try await repository.updateModelInstallState(
                         id: modelID,
@@ -659,10 +650,12 @@ final class LibraryPresentationStore {
                     )
                 }
             } else if ProcessInfo.processInfo.arguments.contains("--uitest-model-not-installed") {
-                try await repository.updateModelInstallState(
-                    id: TTSModelCatalog.kokoroID,
-                    event: .init(state: .notInstalled, progress: 0, message: nil)
-                )
+                for modelID in [TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID] {
+                    try await repository.updateModelInstallState(
+                        id: modelID,
+                        event: .init(modelID: modelID, state: .notInstalled, progress: 0, message: nil)
+                    )
+                }
             }
             _ = try await recovery?.recover()
             await reloadModels()
@@ -842,7 +835,6 @@ final class LibraryPresentationStore {
                 default: String(localized: "当前设备不可用")
                 }
                 let voices: [TTSVoiceDescriptor] = switch model.id {
-                case TTSModelCatalog.kokoroID: TTSModelCatalog.kokoroVoices
                 case TTSModelCatalog.cosyVoiceID: TTSModelCatalog.cosyVoiceVoices
                 case TTSModelCatalog.qwen3TTSID: TTSModelCatalog.qwen3TTSVoices
                 default: []
@@ -983,13 +975,6 @@ final class LibraryPresentationStore {
             downloadSize: nil, selectedVoiceID: nil, voices: []
         ),
         TTSModelSnapshot(
-            id: TTSModelCatalog.kokoroID, name: "Kokoro 多语言 Int8", framework: "sherpa-onnx",
-            runtimeStatus: "未安装", languages: "中文、英文", isAvailable: false, isDefault: false,
-            version: TTSModelCatalog.kokoro.version, installation: .notInstalled, downloadProgress: 0,
-            failureMessage: nil, downloadSize: TTSModelCatalog.kokoro.downloadBytes,
-            selectedVoiceID: "zf_001", voices: TTSModelCatalog.kokoroVoices
-        ),
-        TTSModelSnapshot(
             id: TTSModelCatalog.cosyVoiceID,
             name: TTSModelCatalog.cosyVoice.displayName,
             framework: "speech-swift / MLX", runtimeStatus: "未安装",
@@ -1020,14 +1005,6 @@ final class LibraryPresentationStore {
             runtimeStatus: "已就绪", languages: "随 macOS 已安装语音", isAvailable: true, isDefault: true
             ,version: "system", installation: .installed, downloadProgress: 1, failureMessage: nil,
             downloadSize: nil, selectedVoiceID: nil, voices: []
-        ),
-        TTSModelSnapshot(
-            id: TTSModelCatalog.kokoroID,
-            name: "Kokoro 多语言 Int8", framework: "sherpa-onnx",
-            runtimeStatus: "未安装", languages: "中文、英文", isAvailable: false, isDefault: false,
-            version: TTSModelCatalog.kokoro.version, installation: .notInstalled, downloadProgress: 0,
-            failureMessage: nil, downloadSize: TTSModelCatalog.kokoro.downloadBytes,
-            selectedVoiceID: "zf_001", voices: TTSModelCatalog.kokoroVoices
         ),
         speechSwiftInitialModel(
             TTSModelCatalog.cosyVoice,

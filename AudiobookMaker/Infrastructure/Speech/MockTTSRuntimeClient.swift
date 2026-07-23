@@ -15,6 +15,7 @@ actor MockTTSRuntimeClient: TTSRuntimeClient {
         var supportsImmediateCancellation = true
         var progressStepCount = 4
         var recommendedConcurrency = 1
+        var maximumSafeConcurrency: Int?
     }
 
     private let configuration: Configuration
@@ -35,6 +36,7 @@ actor MockTTSRuntimeClient: TTSRuntimeClient {
             version: "1",
             maximumTextLength: configuration.maximumTextLength,
             recommendedConcurrency: configuration.recommendedConcurrency,
+            maximumSafeConcurrency: configuration.maximumSafeConcurrency,
             supportsImmediateCancellation: configuration.supportsImmediateCancellation,
             outputFileType: "caf"
         )

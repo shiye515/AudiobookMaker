@@ -63,7 +63,7 @@ public struct ModelSpec: Sendable {
 /// let models = try await ModelLoader.load([
 ///     .vad { p in try await SileroVADModel.fromPretrained(engine: .coreml, progressHandler: p) },
 ///     .stt { p in try await ParakeetASRModel.fromPretrained(progressHandler: p) },
-///     .tts { p in try await KokoroTTSModel.fromPretrained(progressHandler: p) },
+///     .tts { p in try await LocalTTSModel.fromPretrained(progressHandler: p) },
 /// ], onProgress: { progress, stage in
 ///     self.loadProgress = progress
 ///     self.loadingStatus = stage

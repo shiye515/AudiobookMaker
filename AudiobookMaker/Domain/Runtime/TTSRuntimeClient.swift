@@ -23,6 +23,7 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
     let version: String
     let maximumTextLength: Int
     let recommendedConcurrency: Int
+    let maximumSafeConcurrency: Int
     let supportsImmediateCancellation: Bool
     let outputFileType: String
     let supportedLanguages: [String]
@@ -38,6 +39,7 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
         version: String,
         maximumTextLength: Int,
         recommendedConcurrency: Int = 1,
+        maximumSafeConcurrency: Int? = nil,
         supportsImmediateCancellation: Bool,
         outputFileType: String = "caf",
         supportedLanguages: [String] = [],
@@ -51,7 +53,8 @@ nonisolated struct RuntimeCapabilities: Codable, Equatable, Sendable {
         self.displayName = displayName
         self.version = version
         self.maximumTextLength = maximumTextLength
-        self.recommendedConcurrency = recommendedConcurrency
+        self.recommendedConcurrency = max(1, recommendedConcurrency)
+        self.maximumSafeConcurrency = max(1, maximumSafeConcurrency ?? recommendedConcurrency)
         self.supportsImmediateCancellation = supportsImmediateCancellation
         self.outputFileType = outputFileType
         self.supportedLanguages = supportedLanguages

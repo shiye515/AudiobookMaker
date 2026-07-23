@@ -81,6 +81,59 @@ final class SystemSpeechRuntimeClient: NSObject, TTSRuntimeClient {
     }
 }
 
+actor ModelRoutingTTSRuntimeClient: TTSRuntimeClient {
+    private let systemRuntime: SystemSpeechRuntimeClient
+    private let speechSwiftRuntime: SpeechSwiftTTSRuntimeClient
+    private var activeModelIDs: [UUID: String] = [:]
+
+    init(
+        systemRuntime: SystemSpeechRuntimeClient,
+        speechSwiftRuntime: SpeechSwiftTTSRuntimeClient
+    ) {
+        self.systemRuntime = systemRuntime
+        self.speechSwiftRuntime = speechSwiftRuntime
+    }
+
+    func capabilities() async throws -> RuntimeCapabilities {
+        try await systemRuntime.capabilities()
+    }
+
+    func capabilities(for modelID: String) async throws -> RuntimeCapabilities {
+        switch modelID {
+        case TTSModelCatalog.systemID:
+            try await systemRuntime.capabilities()
+        case TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID:
+            try await speechSwiftRuntime.capabilities(for: modelID)
+        default:
+            throw RuntimeError.modelUnavailable
+        }
+    }
+
+    func synthesize(_ request: SynthesisRequest) async throws -> SynthesisResult {
+        activeModelIDs[request.requestID] = request.modelID
+        defer { activeModelIDs[request.requestID] = nil }
+        switch request.modelID {
+        case TTSModelCatalog.systemID:
+            return try await systemRuntime.synthesize(request)
+        case TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID:
+            return try await speechSwiftRuntime.synthesize(request)
+        default:
+            throw RuntimeError.modelUnavailable
+        }
+    }
+
+    func cancel(requestID: UUID) async {
+        switch activeModelIDs[requestID] {
+        case TTSModelCatalog.systemID:
+            await systemRuntime.cancel(requestID: requestID)
+        case TTSModelCatalog.cosyVoiceID, TTSModelCatalog.qwen3TTSID:
+            await speechSwiftRuntime.cancel(requestID: requestID)
+        default:
+            break
+        }
+    }
+}
+
 private final class SpeechBufferWriter: @unchecked Sendable {
     private let lock = NSLock()
     private let url: URL

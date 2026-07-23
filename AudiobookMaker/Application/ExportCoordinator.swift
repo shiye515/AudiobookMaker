@@ -183,7 +183,6 @@ nonisolated struct ExportCoordinator: Sendable {
 
     private func narratorName(modelID: String, voiceID: String?) -> String {
         let voices: [TTSVoiceDescriptor] = switch modelID {
-        case TTSModelCatalog.kokoroID: TTSModelCatalog.kokoroVoices
         case TTSModelCatalog.cosyVoiceID: TTSModelCatalog.cosyVoiceVoices
         case TTSModelCatalog.qwen3TTSID: TTSModelCatalog.qwen3TTSVoices
         default: []

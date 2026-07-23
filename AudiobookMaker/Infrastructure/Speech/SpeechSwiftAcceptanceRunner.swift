@@ -79,7 +79,7 @@ enum SpeechSwiftAcceptanceRunner {
         let modelRoot = try await manager.validate(manifest)
         try await dependencies.repository.updateModelInstallState(
             id: modelID,
-            event: ModelInstallEvent(state: .installed, progress: 1, message: nil)
+            event: ModelInstallEvent(modelID: modelID, state: .installed, progress: 1, message: nil)
         )
         let voice = modelID == TTSModelCatalog.cosyVoiceID ? "default" : "vivian"
         try await dependencies.repository.setVoice(modelID: modelID, voiceID: voice)
@@ -302,6 +302,9 @@ enum SpeechSwiftAcceptanceRunner {
         let measuredRTF = generatedWallSeconds / max(generatedAudioSeconds, 0.001)
         let subsetWallToAudioRatio = subsetWallSeconds / max(m4bDurationSeconds, 0.001)
         let modelDiskBytes = try directoryBytes(modelRoot)
+        let appBundleBytes = try directoryBytes(Bundle.main.bundleURL)
+        let hardwareModel = try sysctlString("hw.model")
+        let operatingSystem = ProcessInfo.processInfo.operatingSystemVersionString
         let gibibyte: Int64 = 1_073_741_824
         let mebibyte: Int64 = 1_048_576
         let peakResidentLimit = min(12 * gibibyte, physicalMemoryBytes * 3 / 4)
@@ -327,13 +330,27 @@ enum SpeechSwiftAcceptanceRunner {
         if modelDiskBytes > modelDiskLimit { gateFailures.append("model_disk_bytes") }
 
         let metrics: [String: Any] = [
+            "schema_version": 2,
             "timestamp": Date().ISO8601Format(),
+            "hardware_model": hardwareModel,
+            "physical_memory_bytes": physicalMemoryBytes,
+            "operating_system": operatingSystem,
+            "architecture": "arm64",
+            "build_configuration": buildConfiguration,
+            "app_bundle_bytes": appBundleBytes,
             "model_id": modelID,
             "model_version": manifest.version,
+            "runtime_revision": manifest.runtimeRevision,
             "voice_id": voice,
             "epub": epub.lastPathComponent,
+            "corpus_sha256": sourceHash,
             "epub_chapters": parsed.chapters.count,
             "acceptance_scope": "representative_chapter_subset",
+            "cold_start_definition": "new runtime actor with no loaded model session",
+            "hot_start_definition": "second capability handshake reusing the verified session",
+            "fixed_sample_attempts": samples.count + 2,
+            "fixed_sample_failures": 0,
+            "failure_rate": 0.0,
             "acceptance_chapters": snapshot.chapters.count,
             "acceptance_chapter_indexes": snapshot.chapters.map(\.index),
             "install_or_validate_seconds": installSeconds,
@@ -343,7 +360,6 @@ enum SpeechSwiftAcceptanceRunner {
             "long_chunk_seconds": longSeconds,
             "offline_restart_seconds": restartSeconds,
             "measured_rtf": measuredRTF,
-            "physical_memory_bytes": physicalMemoryBytes,
             "resident_before_load_bytes": residentBeforeLoad,
             "peak_resident_bytes": peakResident,
             "peak_resident_limit_bytes": peakResidentLimit,
@@ -416,6 +432,26 @@ enum SpeechSwiftAcceptanceRunner {
     private static func required<T>(_ value: T?) throws -> T {
         guard let value else { throw AcceptanceError.missingValue }
         return value
+    }
+
+    private nonisolated static var buildConfiguration: String {
+        #if DEBUG
+        "Debug"
+        #else
+        "Release"
+        #endif
+    }
+
+    private nonisolated static func sysctlString(_ name: String) throws -> String {
+        var size = 0
+        guard sysctlbyname(name, nil, &size, nil, 0) == 0, size > 0 else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        var buffer = [CChar](repeating: 0, count: size)
+        guard sysctlbyname(name, &buffer, &size, nil, 0) == 0 else {
+            throw CocoaError(.coderReadCorrupt)
+        }
+        return String(cString: buffer)
     }
 
     private nonisolated static func seconds(since start: ContinuousClock.Instant) -> Double {

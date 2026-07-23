@@ -58,7 +58,7 @@ nonisolated struct ModelInstallEvent: Sendable, Equatable {
     let message: String?
 
     init(
-        modelID: String = TTSModelCatalog.kokoroID,
+        modelID: String,
         state: ModelInstallationState,
         progress: Double,
         message: String?
@@ -140,7 +140,7 @@ actor ModelPackageManager {
         self.referenceCheck = referenceCheck
     }
 
-    func install(_ manifest: DownloadableModelManifest = TTSModelCatalog.kokoro) async throws {
+    func install(_ manifest: DownloadableModelManifest) async throws {
         guard manifestVerifier(manifest) else { throw ModelPackageError.invalidManifest }
         guard activeModelID == nil else {
             throw ModelPackageError.installInProgress(activeModelID ?? manifest.id)
@@ -392,7 +392,7 @@ actor ModelPackageManager {
         }
     }
 
-    func validate(_ manifest: DownloadableModelManifest = TTSModelCatalog.kokoro) throws -> URL {
+    func validate(_ manifest: DownloadableModelManifest) throws -> URL {
         let root = try directories.modelVersionDirectory(id: manifest.id, version: manifest.version)
         for path in manifest.requiredPaths {
             let url = root.appending(path: path)

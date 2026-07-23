@@ -15,40 +15,39 @@ struct RepositoryModelSettingsTests {
         try await dependencies.repository.seedDefaults()
         let initial = try await dependencies.repository.models()
         #expect(initial.contains { $0.id == LibraryRepository.systemVoiceID })
-        #expect(initial.contains { $0.id == LibraryRepository.kokoroID })
         #expect(initial.contains { $0.id == TTSModelCatalog.cosyVoiceID })
         #expect(initial.contains { $0.id == TTSModelCatalog.qwen3TTSID })
         #expect(initial.count(where: \.isDefault) == 1)
         #expect(initial.first(where: \.isDefault)?.id == LibraryRepository.systemVoiceID)
-        #expect(initial.first(where: { $0.id == LibraryRepository.kokoroID })?.installation == .notInstalled)
+        #expect(initial.first(where: { $0.id == TTSModelCatalog.cosyVoiceID })?.installation == .notInstalled)
 
         await #expect(throws: RepositoryError.modelUnavailable) {
             try await dependencies.repository.updateSettings(
                 maxConcurrentJobs: 2,
-                selectedModelID: LibraryRepository.kokoroID,
+                selectedModelID: TTSModelCatalog.cosyVoiceID,
                 keepIntermediatePCM: true
             )
         }
         try await dependencies.repository.updateModelInstallState(
-            id: LibraryRepository.kokoroID,
-            event: ModelInstallEvent(state: .installed, progress: 1, message: nil)
+            id: TTSModelCatalog.cosyVoiceID,
+            event: ModelInstallEvent(modelID: TTSModelCatalog.cosyVoiceID, state: .installed, progress: 1, message: nil)
         )
-        try await dependencies.repository.setVoice(modelID: LibraryRepository.kokoroID, voiceID: "zf_001")
+        try await dependencies.repository.setVoice(modelID: TTSModelCatalog.cosyVoiceID, voiceID: "default")
         try await dependencies.repository.updateSettings(
             maxConcurrentJobs: 2,
-            selectedModelID: LibraryRepository.kokoroID,
+            selectedModelID: TTSModelCatalog.cosyVoiceID,
             keepIntermediatePCM: true
         )
         let updated = try await dependencies.repository.models()
         let settings = try await dependencies.repository.settings()
         #expect(updated.count(where: \.isDefault) == 1)
-        #expect(updated.first(where: \.isDefault)?.id == LibraryRepository.kokoroID)
+        #expect(updated.first(where: \.isDefault)?.id == TTSModelCatalog.cosyVoiceID)
         #expect(settings == PersistentSettingsSnapshot(
             maxConcurrentJobs: 2,
-            selectedModelID: LibraryRepository.kokoroID,
+            selectedModelID: TTSModelCatalog.cosyVoiceID,
             keepIntermediatePCM: true,
-            selectedModelVersion: TTSModelCatalog.kokoro.version,
-            selectedVoiceID: "zf_001"
+            selectedModelVersion: TTSModelCatalog.cosyVoice.version,
+            selectedVoiceID: "default"
         ))
     }
 
@@ -112,7 +111,7 @@ struct RepositoryModelSettingsTests {
     }
 
     @Test @MainActor
-    func refreshesExistingKokoroVoiceCatalogAndRepairsSelection() async throws {
+    func refreshesExistingSpeechSwiftVoiceCatalogAndRepairsSelection() async throws {
         let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let dependencies = try DependencyContainer(inMemory: true, rootOverride: root)
@@ -124,9 +123,9 @@ struct RepositoryModelSettingsTests {
             speakerID: 0
         )
         let staleModel = TTSModelRecord(
-            id: TTSModelCatalog.kokoroID,
-            displayName: "旧 Kokoro",
-            frameworkRaw: "sherpa-onnx",
+            id: TTSModelCatalog.cosyVoiceID,
+            displayName: "CosyVoice3",
+            frameworkRaw: "speech-swift / MLX",
             isDefault: true,
             installationRaw: ModelInstallationState.installed.rawValue,
             runtimeRaw: ModelRuntimeState.ready.rawValue
@@ -135,7 +134,7 @@ struct RepositoryModelSettingsTests {
         staleModel.selectedVoiceID = staleVoice.id
         staleModel.voicesData = try JSONEncoder().encode([staleVoice])
         let staleSettings = AppSettingRecord()
-        staleSettings.selectedModelID = TTSModelCatalog.kokoroID
+        staleSettings.selectedModelID = TTSModelCatalog.cosyVoiceID
         staleSettings.selectedModelVersion = "old-version"
         staleSettings.selectedVoiceID = staleVoice.id
         context.insert(staleModel)
@@ -144,17 +143,11 @@ struct RepositoryModelSettingsTests {
 
         try await dependencies.repository.seedDefaults()
 
-        let voices = try await dependencies.repository.voices(modelID: TTSModelCatalog.kokoroID)
+        let voices = try await dependencies.repository.voices(modelID: TTSModelCatalog.cosyVoiceID)
         let settings = try await dependencies.repository.settings()
-        #expect(voices == TTSModelCatalog.kokoroVoices)
-        #expect(settings.selectedModelVersion == TTSModelCatalog.kokoro.version)
-        #expect(settings.selectedVoiceID == TTSModelCatalog.kokoroDefaultVoiceID)
-
-        try await dependencies.repository.setVoice(
-            modelID: TTSModelCatalog.kokoroID,
-            voiceID: "zf_002"
-        )
-        #expect(try await dependencies.repository.settings().selectedVoiceID == "zf_002")
+        #expect(voices == TTSModelCatalog.cosyVoiceVoices)
+        #expect(settings.selectedModelVersion == TTSModelCatalog.cosyVoice.version)
+        #expect(settings.selectedVoiceID == "default")
     }
 
     @Test @MainActor
@@ -170,14 +163,14 @@ struct RepositoryModelSettingsTests {
             coverRelativePath: nil, totalCharacters: 1, chapters: []
         ))
         let locked = LockedTTSSelection(
-            modelID: TTSModelCatalog.kokoroID,
-            modelVersion: TTSModelCatalog.kokoro.version,
-            voiceID: "zf_001"
+            modelID: TTSModelCatalog.cosyVoiceID,
+            modelVersion: TTSModelCatalog.cosyVoice.version,
+            voiceID: "default"
         )
         let jobID = try await dependencies.repository.enqueueConversion(bookID: bookID, selection: locked)
-        try await dependencies.repository.setVoice(modelID: TTSModelCatalog.kokoroID, voiceID: "zf_002")
+        try await dependencies.repository.setVoice(modelID: TTSModelCatalog.cosyVoiceID, voiceID: "default")
         #expect(try await dependencies.repository.jobSelection(id: jobID) == locked)
-        #expect(try await dependencies.repository.books().first?.modelID == TTSModelCatalog.kokoroID)
+        #expect(try await dependencies.repository.books().first?.modelID == TTSModelCatalog.cosyVoiceID)
         #expect(try await dependencies.repository.hasUnfinishedJob(
             modelID: locked.modelID,
             modelVersion: locked.modelVersion

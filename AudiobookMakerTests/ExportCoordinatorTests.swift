@@ -11,7 +11,7 @@ struct ExportCoordinatorTests {
             completed: true,
             title: "世界：你好/再见",
             chapterTitle: "第一章：出发/归来",
-            modelID: TTSModelCatalog.kokoroID
+            modelID: TTSModelCatalog.cosyVoiceID
         )
         defer { fixture.cleanup() }
         let destination = fixture.root.appending(path: "李光耀论中国与世界.m4b")

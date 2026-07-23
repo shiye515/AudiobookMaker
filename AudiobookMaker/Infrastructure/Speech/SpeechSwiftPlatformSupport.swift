@@ -1,14 +1,7 @@
-import Darwin
 import Foundation
 import Metal
 
 nonisolated struct SpeechSwiftPlatformSupport: Sendable {
-    nonisolated enum Architecture: String, Codable, Equatable, Sendable {
-        case arm64
-        case x86_64
-        case other
-    }
-
     nonisolated struct SystemVersion: Codable, Equatable, Sendable {
         let majorVersion: Int
         let minorVersion: Int
@@ -30,10 +23,10 @@ nonisolated struct SpeechSwiftPlatformSupport: Sendable {
     }
 
     nonisolated struct Snapshot: Equatable, Sendable {
-        let architecture: Architecture
-        let isRosettaTranslated: Bool
+        let isNativeAppleSilicon: Bool
         let operatingSystemVersion: SystemVersion
         let hasMetalDevice: Bool
+        let hasRuntimeResources: Bool
     }
 
     nonisolated enum Status: Equatable, Sendable {
@@ -41,6 +34,7 @@ nonisolated struct SpeechSwiftPlatformSupport: Sendable {
         case requiresNativeAppleSilicon
         case requiresNewerSystem(minimum: SystemVersion)
         case metalUnavailable
+        case runtimeResourcesMissing
 
         var isSupported: Bool { self == .supported }
     }
@@ -59,40 +53,35 @@ nonisolated struct SpeechSwiftPlatformSupport: Sendable {
 
     func status() -> Status {
         let snapshot = snapshotProvider()
-        guard snapshot.architecture == .arm64, !snapshot.isRosettaTranslated else {
+        guard snapshot.isNativeAppleSilicon else {
             return .requiresNativeAppleSilicon
         }
         guard Self.isAtLeast(snapshot.operatingSystemVersion, minimum: Self.minimumSystemVersion) else {
             return .requiresNewerSystem(minimum: Self.minimumSystemVersion)
         }
         guard snapshot.hasMetalDevice else { return .metalUnavailable }
+        guard snapshot.hasRuntimeResources else { return .runtimeResourcesMissing }
         return .supported
     }
 
     static func liveSnapshot() -> Snapshot {
         #if arch(arm64)
-        let architecture = Architecture.arm64
-        #elseif arch(x86_64)
-        let architecture = Architecture.x86_64
+        let isNativeAppleSilicon = true
         #else
-        let architecture = Architecture.other
+        let isNativeAppleSilicon = false
         #endif
-
-        var translated: Int32 = 0
-        var translatedSize = MemoryLayout<Int32>.size
-        let translatedResult = sysctlbyname(
-            "sysctl.proc_translated",
-            &translated,
-            &translatedSize,
-            nil,
-            0
+        let metallib = Bundle.main.url(
+            forResource: "mlx",
+            withExtension: "metallib",
+            subdirectory: "MLX"
         )
-
         return Snapshot(
-            architecture: architecture,
-            isRosettaTranslated: translatedResult == 0 && translated == 1,
+            isNativeAppleSilicon: isNativeAppleSilicon,
             operatingSystemVersion: SystemVersion(ProcessInfo.processInfo.operatingSystemVersion),
-            hasMetalDevice: MTLCreateSystemDefaultDevice() != nil
+            hasMetalDevice: MTLCreateSystemDefaultDevice() != nil,
+            hasRuntimeResources: metallib.map {
+                FileManager.default.isReadableFile(atPath: $0.path)
+            } ?? false
         )
     }
 

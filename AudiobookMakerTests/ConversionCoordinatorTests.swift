@@ -205,7 +205,7 @@ struct ConversionCoordinatorTests {
         #expect(resumable.selection.modelID == TTSModelCatalog.systemID)
     }
 
-    @Test @MainActor func userAndRuntimeConcurrencyLimitsAreBothEnforced() async throws {
+    @Test @MainActor func userRuntimeAndSafetyConcurrencyLimitsAreEnforced() async throws {
         let defaults = UserDefaults.standard
         let prior = defaults.object(forKey: "maxConcurrentJobs")
         defer {
@@ -259,6 +259,28 @@ struct ConversionCoordinatorTests {
         await parallelCoordinator.start(bookID: parallelSecond)
         try await waitUntilIdle(parallelCoordinator, bookIDs: [parallelFirst, parallelSecond])
         #expect(await parallelRuntime.maximumObservedConcurrency() == 2)
+
+        let safetyRoot = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: safetyRoot) }
+        let safetyDependencies = try DependencyContainer(inMemory: true, rootOverride: safetyRoot)
+        configuration.maximumSafeConcurrency = 1
+        let safetyRuntime = MockTTSRuntimeClient(configuration: configuration)
+        let safetyCoordinator = ConversionCoordinator(
+            repository: safetyDependencies.repository,
+            directories: safetyDependencies.directories,
+            runtime: safetyRuntime
+        )
+        let safetyFirst = try await insertBook(
+            title: "安全一", text: "SAFE", hashCharacter: "c", dependencies: safetyDependencies
+        )
+        let safetySecond = try await insertBook(
+            title: "安全二", text: "LIMIT", hashCharacter: "d", dependencies: safetyDependencies
+        )
+        await safetyCoordinator.start(bookID: safetyFirst)
+        await safetyCoordinator.start(bookID: safetySecond)
+        try await waitUntilIdle(safetyCoordinator, bookIDs: [safetyFirst, safetySecond])
+        #expect(await safetyRuntime.maximumObservedConcurrency() == 1)
     }
 
     @Test @MainActor func immediateCancellationPausesInFlightFragmentAndResumes() async throws {

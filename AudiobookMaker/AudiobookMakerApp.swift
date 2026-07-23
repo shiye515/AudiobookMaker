@@ -31,10 +31,10 @@ struct AudiobookMakerApp: App {
             let presentationPlatformSupport = arguments.contains("--uitest-speech-swift-incompatible")
                 ? SpeechSwiftPlatformSupport(snapshotProvider: {
                     .init(
-                        architecture: .x86_64,
-                        isRosettaTranslated: false,
+                        isNativeAppleSilicon: false,
                         operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
-                        hasMetalDevice: true
+                        hasMetalDevice: true,
+                        hasRuntimeResources: true
                     )
                 })
                 : SpeechSwiftPlatformSupport()
@@ -56,16 +56,6 @@ struct AudiobookMakerApp: App {
                         Darwin.exit(EXIT_SUCCESS)
                     } catch {
                         FileHandle.standardError.write(Data("speech-swift acceptance failed: \(error.localizedDescription)\n".utf8))
-                        Darwin.exit(EXIT_FAILURE)
-                    }
-                }
-            } else if arguments.contains(KokoroCompatibilityAcceptanceRunner.launchArgument) {
-                Task { @MainActor in
-                    do {
-                        try await KokoroCompatibilityAcceptanceRunner.run()
-                        Darwin.exit(EXIT_SUCCESS)
-                    } catch {
-                        FileHandle.standardError.write(Data("Kokoro compatibility acceptance failed: \(error.localizedDescription)\n".utf8))
                         Darwin.exit(EXIT_FAILURE)
                     }
                 }

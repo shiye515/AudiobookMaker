@@ -1,24 +1,35 @@
 # Runtime and model distribution
 
-AudiobookMaker ships `sherpa-onnx 1.13.2` and `ONNX Runtime 1.24.4` as signed universal dynamic XCFrameworks. Both binaries contain `x86_64` and `arm64` slices. The versions, release artifact hash and source commit are pinned in `Vendor/SherpaOnnx.version.json`; `Tools/Dependencies/fetch-sherpa-onnx.sh` reproduces the vendor artifacts.
+AudiobookMaker is built and released only for native Apple Silicon (`arm64`). The App, unit-test target, UI-test target, embedded Swift libraries, generated MLX Metal library, archive, signing, and release checks all use the same architecture boundary. Intel, Rosetta, and Universal 2 artifacts are not produced.
 
-On native Apple Silicon, the app links the audited runtime subset in `Vendor/speech-swift`: `AudioCommon`, `MLXCommon`, `CosyVoiceTTS`, and `Qwen3TTS` copied from exact speech-swift 0.0.23 revision `c1aa219bc2284239ff6917d675a3e1978c840260`. `UPSTREAM.md` records the Git tree identity of every copied subtree. The only source patch leaves arm64 unchanged and supplies an x86_64 unsupported stub for the unused CAM++ voice-cloning component whose upstream `Float16` code cannot compile for Intel macOS. The reduced local package pins MLX Swift 0.31.6 and Swift Transformers 1.3.3; remote transitive revisions remain captured by `Package.resolved`. The Release build phase `Tools/Dependencies/build-mlx-metallib.sh` compiles the required MLX kernels and fails when Xcode's Metal toolchain, kernel sources, or the resulting `mlx.metallib` are missing. These runtimes are never constructed in an Intel or Rosetta process, on an unsupported macOS release, or without a Metal device.
+The app uses two retained runtime paths:
 
-Kokoro model weights are never included in the application bundle. After installation, the Models screen can download `kokoro-int8-multi-lang-v1_1.tar.bz2` from the signed built-in manifest. The installer:
+1. Apple system speech through AVFoundation; it is available without downloading a model.
+2. CosyVoice3 and Qwen3-TTS through the audited source subset in `Vendor/speech-swift`, MLX Swift 0.31.6, Swift Transformers 1.3.3, and `Contents/Resources/MLX/mlx.metallib`.
 
-1. accepts only HTTPS GitHub release hosts and approved redirect hosts;
-2. supports progress, cancellation, retry and URLSession resume data;
-3. enforces the expected compressed size and SHA-256;
-4. rejects absolute paths, traversal, links and unexpected executables before extraction;
-5. validates the model, voice, token, lexicon, language-data and license files;
-6. atomically moves a complete version from staging into Application Support.
+`Vendor/speech-swift/UPSTREAM.md` records the exact speech-swift 0.0.23 revision and vendored subtree identities. The reduced package contains only `AudioCommon`, `MLXCommon`, `CosyVoiceTTS`, and `Qwen3TTS`. `Tools/Dependencies/build-mlx-metallib.sh` fails the build when the Metal toolchain, kernel sources, or generated metallib are unavailable.
 
-The runtime loads only the verified version directory below `Application Support/AudiobookMaker/Runtime/Models`. Book text and generated audio are never attached to download requests. Removing network access after installation does not affect model loading, preview or conversion.
+## Explicit model download
 
-CosyVoice3 and Qwen3-TTS use the same interaction model as Kokoro: the user explicitly downloads a signed manifest, sees weighted multi-file progress, may cancel or repair the install, chooses a stable built-in voice, previews locally, and can make the model the default for new jobs. CosyVoice3 installs the pinned 8-bit snapshot (1,121,605,600 bytes); Qwen3-TTS installs the pinned 0.6B CustomVoice bf16 snapshot and tokenizer (2,498,418,367 bytes). The installer accepts only each manifest's exact HTTPS origin/redirect hosts, checks free space for download + staging + safety margin, hashes every artifact, writes a content receipt, and atomically commits one version. Runtime loading is offline-only and fails on a missing file instead of calling `fromPretrained()` over the network.
+No TTS weights ship in the repository or App bundle. The model screen offers two signed, pinned snapshots:
 
-Both MLX models are high-memory runtimes with `recommendedConcurrency = 1`. Preview and conversion share one generation slot; switching models waits for the safe chunk boundary and releases the old session. Qwen3-TTS uses a 120-character sentence-aware secondary limit and CosyVoice3 uses 180 characters. Pause/cancel is cooperative: the current safe chunk may finish, but a late result is discarded and no output is committed. Rollback consists of hiding both signed catalog entries and keeping Apple system speech as default; existing jobs retain their locked model/version/voice and must not silently fall back.
+- CosyVoice3 0.5B MLX 8-bit: 1,121,605,600 bytes
+- Qwen3-TTS 0.6B CustomVoice MLX bf16 plus tokenizer: 2,498,418,367 bytes
 
-Release verification must reproduce package resolution, verify the vendored speech-swift subtree identities/patch, run `lipo -archs` for the universal Kokoro libraries, build both universal compile-only speech-swift surfaces and native arm64 inference, verify the MLX metallib hash, inspect the app bundle for model weights/caches/reference audio, and archive a universal Release. The final archive must pass Developer ID signing, hardened-runtime verification, notarization, stapling, Gatekeeper assessment, sandbox download, offline synthesis, and the rollback switch. Intel and Rosetta runs must show speech-swift as unavailable while Kokoro remains usable.
+The installer starts networking only after explicit user action. It accepts the exact HTTPS origins and redirect hosts declared by the signed manifest, checks disk capacity, verifies every artifact size and SHA-256, rejects unsafe paths/links, writes a content receipt, and atomically commits one model version below `Application Support/AudiobookMaker/Runtime/Models`. Runtime loading uses offline mode and fails if any required file or receipt is invalid.
 
-Run `Tools/Smoke/run-kokoro-host-acceptance.sh MODEL_ARCHIVE [OUTPUT_DIRECTORY]` natively on each supported architecture to record cold load, latency, RTF, memory, cancellation and the real Swift runtime smoke result. Apple Silicon evidence and the human listening gate are defined in `docs/kokoro-release-gates.md`; compiling an arm64 slice on Intel is not accepted as proof of arm64 execution.
+## Runtime safety
+
+Before download or MLX initialization, platform support verifies native arm64, the minimum macOS version, a Metal device, and the bundled MLX runtime resource. A failed check returns a stable unavailable state and does not create a model session.
+
+The runtime reuses the verified session for consecutive fragments with the same model/version. Switching model, an unrecoverable error, or idle memory pressure unloads the rebuildable session. Effective concurrency is the minimum of user configuration, runtime recommendation, and model safety limit. Text is split at sentence boundaries under character/token and generated-duration budgets. Cancellation stops later submissions and discards results that arrive after the cancellation boundary.
+
+## Release gate
+
+`Tools/archive-apple-silicon.sh` creates the Release archive with `ARCHS=arm64`, invokes `Tools/verify-release-artifacts.sh`, verifies the signature, and optionally submits/staples when `NOTARY_PROFILE` is set. The verifier recursively:
+
+- requires every Mach-O file to contain exactly the arm64 slice;
+- scans each Mach-O link graph for removed runtime dependencies;
+- rejects removed runtime paths and bundled model-weight formats.
+
+The same gate is run by `.github/workflows/apple-silicon-release-gate.yml`. Performance collection and regression comparison are documented in `docs/apple-silicon-performance.md`.

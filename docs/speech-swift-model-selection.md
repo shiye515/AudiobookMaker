@@ -8,7 +8,7 @@
 - 本机 spike：macOS 26.5.2 arm64；`CosyVoiceTTS` 与 `Qwen3TTS` 均以 Release target 构建成功
 - MLX Metal library：使用 Xcode 26.6 Metal Toolchain 17F109 从固定 MLX 0.31.6 源码生成，spike SHA-256 为 `0d29caeba83e59e98a04cf822fdd684f5ef4b93210847a385124faf4d9353ab3`
 
-产品工程通过 `Vendor/speech-swift` 集成固定 revision 的 `AudioCommon`、`MLXCommon`、`CosyVoiceTTS` 与 `Qwen3TTS` 源码子集；`UPSTREAM.md` 记录上游 revision 与各子树对象 ID，唯一源码补丁保存在 `PATCHES/0001-campp-intel-compile-stub.patch`。vendor manifest 将 `mlx-swift` 固定为 `0.31.6`、`swift-transformers` 固定为 `1.3.3`，不再引入上游跟踪 `main` 的 `mlx-swift-lm`。产品工程仍必须提交由 Xcode 重新解析生成的 `Package.resolved`，不得手工编辑或无约束升级传递依赖。
+产品工程通过 `Vendor/speech-swift` 集成固定 revision 的 `AudioCommon`、`MLXCommon`、`CosyVoiceTTS` 与 `Qwen3TTS` 源码子集；`UPSTREAM.md` 记录上游 revision 与各子树对象 ID。vendor manifest 将 `mlx-swift` 固定为 `0.31.6`、`swift-transformers` 固定为 `1.3.3`，不再引入上游跟踪 `main` 的 `mlx-swift-lm`。产品与测试 target 仅构建 arm64；项目仍必须提交由 Xcode 重新解析生成的 `Package.resolved`，不得手工编辑或无约束升级传递依赖。
 
 ## Qwen3-TTS
 
@@ -16,7 +16,7 @@
 
 | 候选 | Snapshot 大小 | 音色 | 质量/资源结论 |
 | --- | ---: | --- | --- |
-| 0.6B CustomVoice bf16 | 1,816,120,666 B | 9 个预置 speaker | 首发；Apache-2.0，支持 Kokoro 式音色选择，bf16 避免已知量化音质损失 |
+| 0.6B CustomVoice bf16 | 1,816,120,666 B | 9 个预置 speaker | 首发；Apache-2.0，支持内置音色选择，bf16 避免已知量化音质损失 |
 | 1.7B Base 8-bit | 2,421,858,094 B | 无预置 speaker | 上游英文 round-trip WER 更低，但下载/内存更高且不满足多音色交互 |
 | CoreML FP16 | 1,733,129,292 B | Base/default | 体积较小且无需 MLX，但没有预置 speaker；保留为后续低内存后端 |
 

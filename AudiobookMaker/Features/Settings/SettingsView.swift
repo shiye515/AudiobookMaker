@@ -12,7 +12,7 @@ struct SettingsView: View {
                     Text("1（推荐）").tag(1)
                     Text("2").tag(2)
                 }
-                Text("Kokoro 使用 CPU；CosyVoice3 与 Qwen3-TTS 需要原生 Apple Silicon 和 Metal。高内存本地模型会将安全并发限制为 1。")
+                Text("CosyVoice3 与 Qwen3-TTS 需要原生 Apple Silicon 和 Metal。高内存本地模型会将安全并发限制为 1。")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

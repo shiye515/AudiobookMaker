@@ -237,10 +237,10 @@ private struct Fixture {
             eventHandler: eventHandler,
             platformSupport: .init(snapshotProvider: {
                 .init(
-                    architecture: platformSupported ? .arm64 : .x86_64,
-                    isRosettaTranslated: false,
+                    isNativeAppleSilicon: platformSupported,
                     operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
-                    hasMetalDevice: platformSupported
+                    hasMetalDevice: platformSupported,
+                    hasRuntimeResources: platformSupported
                 )
             }),
             downloader: SecureModelDownloader(configuration: configuration),

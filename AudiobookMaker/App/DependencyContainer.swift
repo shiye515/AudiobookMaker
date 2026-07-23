@@ -71,7 +71,15 @@ final class DependencyContainer {
             parser: epubService,
             logger: loggingService
         )
-        let runtime = runtimeOverride ?? RoutingTTSRuntimeClient(directories: directories)
+        let runtime: any TTSRuntimeClient
+        if let runtimeOverride {
+            runtime = runtimeOverride
+        } else {
+            runtime = ModelRoutingTTSRuntimeClient(
+                systemRuntime: SystemSpeechRuntimeClient(),
+                speechSwiftRuntime: SpeechSwiftTTSRuntimeClient(directories: directories)
+            )
+        }
         self.runtime = runtime
         self.modelManager = ModelPackageManager(
             directories: directories,

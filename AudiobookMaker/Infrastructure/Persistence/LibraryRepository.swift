@@ -22,72 +22,50 @@ nonisolated enum RepositoryError: LocalizedError, Equatable, Sendable {
 @ModelActor
 actor LibraryRepository {
     nonisolated static let systemVoiceID = "com.audiobookmaker.apple-system-speech"
-    nonisolated static let kokoroID = TTSModelCatalog.kokoroID
+    nonisolated static let kokoroID = "sherpa-onnx/kokoro-multi-lang-v1_1-int8"
+    nonisolated static let currentMigrationVersion = 1
 
     func seedDefaults() throws {
         let settingDescriptor = FetchDescriptor<AppSettingRecord>()
         if try modelContext.fetchCount(settingDescriptor) == 0 {
             modelContext.insert(AppSettingRecord())
         }
-        let legacyIDs = [
+        let removedIDs = [
+            Self.kokoroID,
             "aufklarer/" + "Cosy" + "Voice3-0.5B-" + "M" + "LX-8bit-full",
             "cosy" + "voice",
             "cosy" + "voice3",
             "m" + "lx"
         ]
-        let isLegacyID: (String) -> Bool = { value in
-            legacyIDs.contains { $0.caseInsensitiveCompare(value) == .orderedSame }
+        let isRemovedID: (String) -> Bool = { value in
+            removedIDs.contains { $0.caseInsensitiveCompare(value) == .orderedSame }
         }
         let existingSettings = try modelContext.fetch(FetchDescriptor<AppSettingRecord>())
-        for setting in existingSettings where isLegacyID(setting.selectedModelID) {
-            setting.selectedModelID = Self.systemVoiceID
-            setting.selectedModelVersion = "system"
-            setting.selectedVoiceID = nil
+        for setting in existingSettings {
+            if setting.migrationVersion < Self.currentMigrationVersion,
+               isRemovedID(setting.selectedModelID) {
+                setting.selectedModelID = Self.systemVoiceID
+                setting.selectedModelVersion = "system"
+                setting.selectedVoiceID = nil
+            }
+            setting.migrationVersion = Self.currentMigrationVersion
         }
         let existingJobs = try modelContext.fetch(FetchDescriptor<ConversionJobRecord>())
-        for job in existingJobs where isLegacyID(job.modelID) {
+        for job in existingJobs where isRemovedID(job.modelID) {
+            guard job.state != .completed, job.state != .cancelled else { continue }
             job.legacyRuntimeDiagnostic = "Migrated unsupported legacy runtime: \(job.modelID)"
+            job.requiresRestart = true
+            job.state = .failed
+            job.errorCode = "runtime.modelRemoved"
+            job.errorMessage = "原语音模型已移除，需要重新开始转换。"
+            job.finishedAt = job.finishedAt ?? .now
+            job.book?.status = .failed
         }
         let legacyModels = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
-        for model in legacyModels where isLegacyID(model.id) {
+        for model in legacyModels where isRemovedID(model.id) {
             modelContext.delete(model)
         }
 
-        let modelID = Self.kokoroID
-        let modelDescriptor = FetchDescriptor<TTSModelRecord>(
-            predicate: #Predicate { $0.id == modelID }
-        )
-        let currentKokoroVoices = TTSModelCatalog.kokoroVoices
-        let currentKokoroVoicesData = try JSONEncoder().encode(currentKokoroVoices)
-        if let record = try modelContext.fetch(modelDescriptor).first {
-            // The bundled manifest is authoritative for this versioned model ID.
-            // Older app builds may have created the record before voicesData was
-            // populated, while the UI already displays the current catalog.
-            record.displayName = TTSModelCatalog.kokoro.displayName
-            record.frameworkRaw = "sherpa-onnx"
-            record.source = TTSModelCatalog.kokoro.downloadURL.absoluteString
-            record.version = TTSModelCatalog.kokoro.version
-            record.downloadSize = TTSModelCatalog.kokoro.downloadBytes
-            record.voicesData = currentKokoroVoicesData
-            if !currentKokoroVoices.contains(where: { $0.id == record.selectedVoiceID }) {
-                record.selectedVoiceID = TTSModelCatalog.kokoroDefaultVoiceID
-            }
-        } else {
-            let record = TTSModelRecord(
-                id: modelID,
-                displayName: TTSModelCatalog.kokoro.displayName,
-                frameworkRaw: "sherpa-onnx",
-                source: TTSModelCatalog.kokoro.downloadURL.absoluteString,
-                isDefault: false,
-                installationRaw: "notInstalled",
-                runtimeRaw: "unloaded"
-            )
-            record.version = TTSModelCatalog.kokoro.version
-            record.downloadSize = TTSModelCatalog.kokoro.downloadBytes
-            record.selectedVoiceID = TTSModelCatalog.kokoroDefaultVoiceID
-            record.voicesData = currentKokoroVoicesData
-            modelContext.insert(record)
-        }
         let systemVoiceID = Self.systemVoiceID
         let systemVoiceDescriptor = FetchDescriptor<TTSModelRecord>(
             predicate: #Predicate { $0.id == systemVoiceID }
@@ -150,6 +128,14 @@ actor LibraryRepository {
                 modelContext.insert(record)
             }
         }
+        let refreshedModels = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
+        for setting in existingSettings {
+            guard let selected = refreshedModels.first(where: { $0.id == setting.selectedModelID }) else {
+                continue
+            }
+            setting.selectedModelVersion = selected.version
+            setting.selectedVoiceID = selected.selectedVoiceID
+        }
         let allModels = try modelContext.fetch(FetchDescriptor<TTSModelRecord>())
         if !allModels.contains(where: {
             $0.isDefault
@@ -157,12 +143,6 @@ actor LibraryRepository {
                 && $0.runtimeRaw != ModelRuntimeState.unavailable.rawValue
         }) {
             for model in allModels { model.isDefault = model.id == systemVoiceID }
-        }
-        if let defaultKokoro = allModels.first(where: { $0.id == modelID && $0.isDefault }) {
-            for setting in existingSettings where setting.selectedModelID == modelID {
-                setting.selectedModelVersion = defaultKokoro.version
-                setting.selectedVoiceID = defaultKokoro.selectedVoiceID
-            }
         }
         try modelContext.save()
     }
@@ -468,11 +448,43 @@ actor LibraryRepository {
         return LockedTTSSelection(modelID: job.modelID, modelVersion: job.modelVersion, voiceID: job.voiceID)
     }
 
+    func conversionRequiresRestart(bookID: UUID) throws -> Bool {
+        let descriptor = FetchDescriptor<BookRecord>(predicate: #Predicate { $0.id == bookID })
+        guard let book = try modelContext.fetch(descriptor).first else {
+            throw RepositoryError.bookNotFound
+        }
+        return book.jobs.contains(where: \.requiresRestart)
+    }
+
+    func resetRemovedModelConversion(bookID: UUID) throws {
+        let descriptor = FetchDescriptor<BookRecord>(predicate: #Predicate { $0.id == bookID })
+        guard let book = try modelContext.fetch(descriptor).first,
+              book.jobs.contains(where: \.requiresRestart) else {
+            throw RepositoryError.illegalTransition
+        }
+        for job in book.jobs where job.requiresRestart {
+            job.requiresRestart = false
+            job.state = .cancelled
+            job.finishedAt = job.finishedAt ?? .now
+        }
+        for chapter in book.chapters {
+            chapter.status = .pending
+            chapter.artifactRelativePath = nil
+            chapter.durationSeconds = nil
+            chapter.lastErrorCode = nil
+            chapter.lastErrorMessage = nil
+            chapter.updatedAt = .now
+        }
+        book.status = .ready
+        book.updatedAt = .now
+        try modelContext.save()
+    }
+
     func resumableConversion(bookID: UUID) throws -> ResumableConversionJob {
         let descriptor = FetchDescriptor<BookRecord>(predicate: #Predicate { $0.id == bookID })
         guard let book = try modelContext.fetch(descriptor).first,
               let job = book.jobs
-                .filter({ $0.state == .paused || $0.state == .interrupted })
+                .filter({ !$0.requiresRestart && ($0.state == .paused || $0.state == .interrupted) })
                 .max(by: { $0.queueOrdinal < $1.queueOrdinal }) else {
             throw RepositoryError.illegalTransition
         }

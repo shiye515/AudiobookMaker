@@ -35,9 +35,8 @@ nonisolated struct AppDirectories: Sendable {
     }
 
     func createIfNeeded(fileManager: FileManager = .default) throws {
-        // Keep these calls explicit. XCTest may initialize independent app hosts in
-        // parallel; avoiding first-use generic Array metadata here also sidesteps a
-        // Swift x86_64 runtime metadata race observed during XPC crash-recovery tests.
+        // Keep these calls explicit because XCTest may initialize independent app
+        // hosts in parallel while exercising crash-recovery paths.
         try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: books, withIntermediateDirectories: true)
         try fileManager.createDirectory(at: staging, withIntermediateDirectories: true)
@@ -76,6 +75,51 @@ nonisolated struct AppDirectories: Sendable {
         let safeID = try safeModelComponent(id.replacingOccurrences(of: "/", with: "--"))
         let safeVersion = try safeModelComponent(version)
         return modelResumeData.appending(path: "\(safeID)-\(safeVersion).resume")
+    }
+
+    @discardableResult
+    func removeLegacyKokoroArtifacts(fileManager: FileManager = .default) throws -> [URL] {
+        let safeID = try safeModelComponent(
+            LibraryRepository.kokoroID.replacingOccurrences(of: "/", with: "--")
+        )
+        var candidates = [modelDirectory(id: LibraryRepository.kokoroID)]
+        for parent in [modelStaging, modelResumeData] {
+            let entries = try fileManager.contentsOfDirectory(
+                at: parent,
+                includingPropertiesForKeys: [.isSymbolicLinkKey],
+                options: [.skipsHiddenFiles]
+            )
+            candidates.append(contentsOf: entries.filter {
+                $0.lastPathComponent.hasPrefix(safeID + "-")
+            })
+        }
+
+        let existing = candidates.filter { fileManager.fileExists(atPath: $0.path) }
+        for candidate in existing {
+            try validateManagedChild(candidate, fileManager: fileManager)
+        }
+        for candidate in existing {
+            try fileManager.removeItem(at: candidate)
+        }
+        return existing
+    }
+
+    private func validateManagedChild(_ candidate: URL, fileManager: FileManager) throws {
+        let parent = candidate.deletingLastPathComponent().standardizedFileURL
+        _ = try relativePath(for: parent)
+        guard candidate.standardizedFileURL.deletingLastPathComponent() == parent else {
+            throw AppDirectoryError.unsafeRelativePath
+        }
+        let resolvedParent = parent.resolvingSymlinksInPath().standardizedFileURL
+        let resolvedCandidate = candidate.resolvingSymlinksInPath().standardizedFileURL
+        guard resolvedCandidate.pathComponents.starts(with: resolvedParent.pathComponents),
+              resolvedCandidate != resolvedParent else {
+            throw AppDirectoryError.unsafeRelativePath
+        }
+        let attributes = try fileManager.attributesOfItem(atPath: candidate.path)
+        if attributes[.type] as? FileAttributeType == .typeSymbolicLink {
+            throw AppDirectoryError.unsafeRelativePath
+        }
     }
 
     private func safeModelComponent(_ value: String) throws -> String {

@@ -7,10 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		B20000000000000000000001 /* Vendor/SherpaOnnx.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */; };
-		B20000000000000000000003 /* Vendor/OnnxRuntime.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */; };
-		B20000000000000000000005 /* Vendor/SherpaOnnx.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
-		B20000000000000000000006 /* Vendor/OnnxRuntime.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		B30000000000000000000001 /* Qwen3TTS in Frameworks */ = {isa = PBXBuildFile; productRef = B30000000000000000000003 /* Qwen3TTS */; };
 		B30000000000000000000002 /* CosyVoiceTTS in Frameworks */ = {isa = PBXBuildFile; productRef = B30000000000000000000004 /* CosyVoiceTTS */; };
 /* End PBXBuildFile section */
@@ -32,27 +28,10 @@
 		};
 /* End PBXContainerItemProxy section */
 
-/* Begin PBXCopyFilesBuildPhase section */
-		B20000000000000000000007 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				B20000000000000000000005 /* Vendor/SherpaOnnx.xcframework in Embed Frameworks */,
-				B20000000000000000000006 /* Vendor/OnnxRuntime.xcframework in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXCopyFilesBuildPhase section */
-
 /* Begin PBXFileReference section */
 		9EAA13D7300B0FDC00749064 /* AudiobookMaker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AudiobookMaker.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000001 /* AudiobookMakerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AudiobookMakerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000002 /* AudiobookMakerUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AudiobookMakerUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/SherpaOnnx.xcframework; sourceTree = SOURCE_ROOT; };
-		B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = Vendor/OnnxRuntime.xcframework; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -91,8 +70,6 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B20000000000000000000001 /* Vendor/SherpaOnnx.xcframework in Frameworks */,
-				B20000000000000000000003 /* Vendor/OnnxRuntime.xcframework in Frameworks */,
 				B30000000000000000000001 /* Qwen3TTS in Frameworks */,
 				B30000000000000000000002 /* CosyVoiceTTS in Frameworks */,
 			);
@@ -118,8 +95,6 @@
 		9EAA13CE300B0FDC00749064 = {
 			isa = PBXGroup;
 			children = (
-				B20000000000000000000002 /* Vendor/SherpaOnnx.xcframework */,
-				B20000000000000000000004 /* Vendor/OnnxRuntime.xcframework */,
 				9EAA13D9300B0FDC00749064 /* AudiobookMaker */,
 				A10000000000000000000003 /* AudiobookMakerTests */,
 				A10000000000000000000004 /* AudiobookMakerUITests */,
@@ -147,8 +122,8 @@
 				9EAA13D3300B0FDC00749064 /* Sources */,
 				9EAA13D4300B0FDC00749064 /* Frameworks */,
 				9EAA13D5300B0FDC00749064 /* Resources */,
-				B20000000000000000000007 /* Embed Frameworks */,
 				B30000000000000000000005 /* Build MLX Metal Library */,
+				B40000000000000000000001 /* Verify Release Artifact */,
 			);
 			buildRules = (
 			);
@@ -306,6 +281,26 @@
 			shellPath = /bin/bash;
 			shellScript = "\"$SRCROOT/Tools/Dependencies/build-mlx-metallib.sh\"\n";
 		};
+		B40000000000000000000001 /* Verify Release Artifact */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Tools/verify-release-artifacts.sh",
+			);
+			name = "Verify Release Artifact";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "if [[ \"$CONFIGURATION\" == \"Release\" ]]; then\n  \"$SRCROOT/Tools/verify-release-artifacts.sh\" \"$TARGET_BUILD_DIR/$FULL_PRODUCT_NAME\"\nfi\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -349,6 +344,7 @@
 		9EAA13E2300B0FDE00749064 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -413,6 +409,7 @@
 		9EAA13E3300B0FDE00749064 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -469,6 +466,7 @@
 		9EAA13E5300B0FDE00749064 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AudiobookMakerIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AudiobookMaker/AudiobookMaker.entitlements;
@@ -506,6 +504,7 @@
 		9EAA13E6300B0FDE00749064 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AudiobookMakerIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = AudiobookMaker/AudiobookMaker.entitlements;
@@ -543,6 +542,7 @@
 		A10000000000000000000011 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -561,6 +561,7 @@
 		A10000000000000000000012 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -579,6 +580,7 @@
 		A10000000000000000000013 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5Q85C9M9LA;
@@ -596,6 +598,7 @@
 		A10000000000000000000014 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ARCHS = arm64;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 5Q85C9M9LA;

@@ -27,11 +27,13 @@ struct ModelManifestTests {
         })
     }
 
-    @Test("The catalog retains stable system and Kokoro identifiers")
+    @Test("The catalog retains stable system and Speech-Swift identifiers")
     func stableExistingIdentifiers() {
         #expect(TTSModelCatalog.systemID == "com.audiobookmaker.apple-system-speech")
-        #expect(TTSModelCatalog.kokoroID == "sherpa-onnx/kokoro-multi-lang-v1_1-int8")
-        #expect(TTSModelCatalog.manifestsByID[TTSModelCatalog.kokoroID] == TTSModelCatalog.kokoro)
+        #expect(TTSModelCatalog.cosyVoiceID == "soniqo.speech-swift/cosyvoice3-0.5b-mlx-8bit-full")
+        #expect(TTSModelCatalog.qwen3TTSID == "soniqo.speech-swift/qwen3-tts-12hz-0.6b-customvoice-mlx-bf16")
+        #expect(TTSModelCatalog.manifestsByID[TTSModelCatalog.cosyVoiceID] == TTSModelCatalog.cosyVoice)
+        #expect(TTSModelCatalog.manifestsByID[TTSModelCatalog.qwen3TTSID] == TTSModelCatalog.qwen3TTS)
     }
 
     private func isSafeRelativePath(_ path: String) -> Bool {

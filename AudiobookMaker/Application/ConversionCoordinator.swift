@@ -40,6 +40,14 @@ actor ConversionCoordinator {
               !activeBookIDs.contains(bookID),
               !pending.contains(where: { $0.bookID == bookID }) else { return }
         do {
+            if try await repository.conversionRequiresRestart(bookID: bookID) {
+                let audioDirectory = directories.bookDirectory(id: bookID)
+                    .appending(path: "audio", directoryHint: .isDirectory)
+                if FileManager.default.fileExists(atPath: audioDirectory.path) {
+                    try FileManager.default.removeItem(at: audioDirectory)
+                }
+                try await repository.resetRemovedModelConversion(bookID: bookID)
+            }
             let settings = try await repository.settings()
             let capabilities = try await runtime.capabilities(for: settings.selectedModelID)
             let selection = LockedTTSSelection(
@@ -122,7 +130,8 @@ actor ConversionCoordinator {
         let userLimit = configured == 2 ? 2 : 1
         let allCapabilities = Array(activeCapabilities.values) + pending.map(\.capabilities)
         let runtimeLimit = allCapabilities.map(\.recommendedConcurrency).min() ?? 1
-        let limit = max(1, min(userLimit, runtimeLimit))
+        let safetyLimit = allCapabilities.map(\.maximumSafeConcurrency).min() ?? 1
+        let limit = max(1, min(userLimit, runtimeLimit, safetyLimit))
         while activeBookIDs.count < limit, !pending.isEmpty {
             let job = pending.removeFirst()
             activeBookIDs.insert(job.bookID)

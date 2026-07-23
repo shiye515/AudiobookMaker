@@ -7,10 +7,10 @@ struct DependencyInjectionTests {
     func modelPresentationUsesInjectedIncompatiblePlatformAndKeepsOtherModelsVisible() throws {
         let unsupported = SpeechSwiftPlatformSupport(snapshotProvider: {
             .init(
-                architecture: .x86_64,
-                isRosettaTranslated: false,
+                isNativeAppleSilicon: false,
                 operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
-                hasMetalDevice: true
+                hasMetalDevice: true,
+                hasRuntimeResources: true
             )
         })
         let root = FileManager.default.temporaryDirectory
@@ -23,10 +23,8 @@ struct DependencyInjectionTests {
         )
 
         let system = try #require(store.models.first { $0.id == TTSModelCatalog.systemID })
-        let kokoro = try #require(store.models.first { $0.id == TTSModelCatalog.kokoroID })
         let qwen = try #require(store.models.first { $0.id == TTSModelCatalog.qwen3TTSID })
         #expect(system.isAvailable)
-        #expect(kokoro.installation == .notInstalled)
         #expect(!store.isPlatformCompatible(modelID: qwen.id))
         #expect(qwen.installation == .unavailable)
         #expect(qwen.runtimeStatus == "需要原生 Apple Silicon")
@@ -64,11 +62,11 @@ struct DependencyInjectionTests {
     func bookModelLabelUsesDefaultUntilAConversionLocksItsModel() throws {
         let store = LibraryPresentationStore()
         for index in store.models.indices {
-            store.models[index].isDefault = store.models[index].id == TTSModelCatalog.kokoroID
+            store.models[index].isDefault = store.models[index].id == TTSModelCatalog.cosyVoiceID
         }
         var book = try #require(store.books.first)
 
-        #expect(store.modelLabel(for: book).contains("Kokoro"))
+        #expect(store.modelLabel(for: book).contains("CosyVoice3"))
         book.modelID = TTSModelCatalog.systemID
         #expect(store.modelLabel(for: book).contains("Apple 系统语音"))
     }
@@ -86,7 +84,21 @@ struct DependencyInjectionTests {
         #expect(dependencies.mediaService is SystemM4BPackaging)
         #expect(dependencies.archiveService is ZipContainerWriter)
         #expect(dependencies.loggingService is PrivacyPreservingApplicationLogger)
-        #expect(dependencies.runtime is RoutingTTSRuntimeClient)
+        #expect(dependencies.runtime is ModelRoutingTTSRuntimeClient)
+    }
+
+    @Test @MainActor
+    func productionRuntimeRoutesSystemSpeechAndRejectsRemovedModels() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dependencies = try DependencyContainer(inMemory: true, rootOverride: root)
+
+        let capabilities = try await dependencies.runtime.capabilities(for: TTSModelCatalog.systemID)
+        #expect(capabilities.runtimeID == TTSModelCatalog.systemID)
+        await #expect(throws: RuntimeError.modelUnavailable) {
+            try await dependencies.runtime.capabilities(for: LibraryRepository.kokoroID)
+        }
     }
 
     @Test @MainActor
@@ -102,22 +114,22 @@ struct DependencyInjectionTests {
         )
         let store = LibraryPresentationStore(dependencies: dependencies)
         store.models = [TTSModelSnapshot(
-            id: TTSModelCatalog.kokoroID,
-            name: "Kokoro 多语言 Int8",
-            framework: "sherpa-onnx",
+            id: TTSModelCatalog.cosyVoiceID,
+            name: TTSModelCatalog.cosyVoice.displayName,
+            framework: "speech-swift / MLX",
             runtimeStatus: "已就绪",
             languages: "中文、英文",
             isAvailable: true,
             isDefault: true,
-            version: TTSModelCatalog.kokoro.version,
+            version: TTSModelCatalog.cosyVoice.version,
             installation: .installed,
             downloadProgress: 1,
             failureMessage: nil,
-            downloadSize: TTSModelCatalog.kokoro.downloadBytes,
-            selectedVoiceID: TTSModelCatalog.kokoroDefaultVoiceID,
-            voices: TTSModelCatalog.kokoroVoices
+            downloadSize: TTSModelCatalog.cosyVoice.downloadBytes,
+            selectedVoiceID: "default",
+            voices: TTSModelCatalog.cosyVoiceVoices
         )]
-        store.selectedModelID = TTSModelCatalog.kokoroID
+        store.selectedModelID = TTSModelCatalog.cosyVoiceID
 
         store.toggleVoicePreview()
         #expect(store.isPreviewing)

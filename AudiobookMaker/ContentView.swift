@@ -258,9 +258,6 @@ private struct ModelSelectionCommandModifier: ViewModifier {
             .onReceive(NotificationCenter.default.publisher(for: .selectSystemModel)) { _ in
                 select(TTSModelCatalog.systemID, makeDefaultWhenAvailable: true)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .selectKokoroModel)) { _ in
-                select(TTSModelCatalog.kokoroID, makeDefaultWhenAvailable: true)
-            }
             .onReceive(NotificationCenter.default.publisher(for: .selectCosyVoiceModel)) { _ in
                 select(TTSModelCatalog.cosyVoiceID, makeDefaultWhenAvailable: true)
             }
@@ -738,14 +735,7 @@ private struct ModelDetailView: View {
                 }
             }
             Section("许可") {
-                if model.id == TTSModelCatalog.kokoroID {
-                    Link("sherpa-onnx · Apache-2.0", destination: URL(string: "https://github.com/k2-fsa/sherpa-onnx/blob/v1.13.2/LICENSE")!)
-                    Link("ONNX Runtime · MIT", destination: URL(string: "https://github.com/microsoft/onnxruntime/blob/v1.24.4/LICENSE")!)
-                    Link("Kokoro 模型与随包资源许可", destination: URL(string: "https://github.com/k2-fsa/sherpa-onnx/releases/tag/tts-models")!)
-                    if model.installation == .installed {
-                        Button("打开已安装模型的 LICENSE") { store.openSelectedModelLicense() }
-                    }
-                } else if let manifest {
+                if let manifest {
                     Link("\(model.name) · \(manifest.licenseIdentifier)", destination: manifest.sourceURL)
                     Link("speech-swift · Apache-2.0", destination: URL(string: "https://github.com/soniqo/speech-swift/blob/v0.0.23/LICENSE")!)
                     Link("MLX Swift · MIT", destination: URL(string: "https://github.com/ml-explore/mlx-swift/blob/0.31.6/LICENSE")!)

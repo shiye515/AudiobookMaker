@@ -24,7 +24,36 @@ struct SpeechSwiftRuntimeTests {
         #expect(await fixture.cosySession.unloadCount == 1)
     }
 
-    @Test("Long Qwen input is split at sentence boundaries and merged into valid CAF")
+    @Test("Same-model sessions are reused and idle memory pressure unloads them")
+    func sessionReuseAndMemoryPressure() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let factory = CountingSpeechSwiftSessionFactory(session: fixture.cosySession)
+        let runtime = SpeechSwiftTTSRuntimeClient(
+            directories: fixture.directories,
+            platformSupport: .init(snapshotProvider: {
+                .init(
+                    isNativeAppleSilicon: true,
+                    operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
+                    hasMetalDevice: true,
+                    hasRuntimeResources: true
+                )
+            }),
+            sessionFactory: factory
+        )
+
+        _ = try await runtime.capabilities(for: TTSModelCatalog.cosyVoiceID)
+        _ = try await runtime.capabilities(for: TTSModelCatalog.cosyVoiceID)
+        #expect(factory.invocationCount == 1)
+        #expect(await fixture.cosySession.unloadCount == 0)
+
+        await runtime.handleMemoryPressure()
+        #expect(await fixture.cosySession.unloadCount == 1)
+        _ = try await runtime.capabilities(for: TTSModelCatalog.cosyVoiceID)
+        #expect(factory.invocationCount == 2)
+    }
+
+    @Test("Long Qwen input is split at sentence and token-budget boundaries and merged into valid CAF")
     func chunkAndMerge() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
@@ -159,18 +188,42 @@ struct SpeechSwiftRuntimeTests {
         audioFixture.remove()
     }
 
-    @Test("The unified router dispatches both stable speech-swift IDs and rejects unknown or incompatible IDs")
+    @Test("Platform and resource failures do not construct an MLX session")
+    func platformFailurePreventsSessionInitialization() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let factory = CountingSpeechSwiftSessionFactory(session: fixture.cosySession)
+        let runtime = SpeechSwiftTTSRuntimeClient(
+            directories: fixture.directories,
+            platformSupport: .init(snapshotProvider: {
+                .init(
+                    isNativeAppleSilicon: true,
+                    operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
+                    hasMetalDevice: true,
+                    hasRuntimeResources: false
+                )
+            }),
+            sessionFactory: factory
+        )
+
+        await #expect(throws: RuntimeError.incompatibleRuntime) {
+            _ = try await runtime.capabilities(for: TTSModelCatalog.cosyVoiceID)
+        }
+        #expect(factory.invocationCount == 0)
+    }
+
+    @Test("Speech-swift runtime dispatches both stable speech-swift IDs and rejects unknown or incompatible IDs")
     func routing() async throws {
         let fixture = try Fixture()
         defer { fixture.remove() }
-        let router = fixture.router(platformSupported: true)
-        #expect(try await router.capabilities(for: TTSModelCatalog.cosyVoiceID).runtimeID == TTSModelCatalog.cosyVoiceID)
-        #expect(try await router.capabilities(for: TTSModelCatalog.qwen3TTSID).runtimeID == TTSModelCatalog.qwen3TTSID)
+        let runtime = fixture.runtime()
+        #expect(try await runtime.capabilities(for: TTSModelCatalog.cosyVoiceID).runtimeID == TTSModelCatalog.cosyVoiceID)
+        #expect(try await runtime.capabilities(for: TTSModelCatalog.qwen3TTSID).runtimeID == TTSModelCatalog.qwen3TTSID)
         await #expect(throws: RuntimeError.modelUnavailable) {
-            _ = try await router.capabilities(for: "unknown/runtime")
+            _ = try await runtime.capabilities(for: "unknown/runtime")
         }
         await #expect(throws: RuntimeError.incompatibleRuntime) {
-            _ = try await fixture.router(platformSupported: false)
+            _ = try await fixture.incompatibleRuntime()
                 .capabilities(for: TTSModelCatalog.cosyVoiceID)
         }
     }
@@ -212,10 +265,10 @@ private struct Fixture {
             directories: directories,
             platformSupport: .init(snapshotProvider: {
                 .init(
-                    architecture: .arm64,
-                    isRosettaTranslated: false,
+                    isNativeAppleSilicon: true,
                     operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
-                    hasMetalDevice: true
+                    hasMetalDevice: true,
+                    hasRuntimeResources: true
                 )
             }),
             sessionFactory: FakeSpeechSwiftSessionFactory(
@@ -227,11 +280,11 @@ private struct Fixture {
     }
 
     @MainActor
-    func router(platformSupported: Bool) -> RoutingTTSRuntimeClient {
-        RoutingTTSRuntimeClient(
+    func incompatibleRuntime() -> SpeechSwiftTTSRuntimeClient {
+        SpeechSwiftTTSRuntimeClient(
             directories: directories,
-            platformSupport: support(platformSupported: platformSupported),
-            speechSwiftSessionFactory: FakeSpeechSwiftSessionFactory(
+            platformSupport: support(platformSupported: false),
+            sessionFactory: FakeSpeechSwiftSessionFactory(
                 cosy: cosySession,
                 qwen: qwenSession
             )
@@ -241,10 +294,10 @@ private struct Fixture {
     private func support(platformSupported: Bool) -> SpeechSwiftPlatformSupport {
         .init(snapshotProvider: {
             .init(
-                architecture: platformSupported ? .arm64 : .x86_64,
-                isRosettaTranslated: false,
+                isNativeAppleSilicon: platformSupported,
                 operatingSystemVersion: .init(majorVersion: 26, minorVersion: 0, patchVersion: 0),
-                hasMetalDevice: platformSupported
+                hasMetalDevice: platformSupported,
+                hasRuntimeResources: platformSupported
             )
         })
     }
@@ -261,6 +314,23 @@ private struct Fixture {
             )
             try Data("fixture".utf8).write(to: file)
         }
+    }
+}
+
+private nonisolated final class CountingSpeechSwiftSessionFactory: SpeechSwiftSessionFactory, @unchecked Sendable {
+    private let lock = NSLock()
+    private let session: any SpeechSwiftSession
+    private var count = 0
+
+    init(session: any SpeechSwiftSession) {
+        self.session = session
+    }
+
+    var invocationCount: Int { lock.withLock { count } }
+
+    func makeSession(modelID: String, modelRoot: URL) throws -> any SpeechSwiftSession {
+        lock.withLock { count += 1 }
+        return session
     }
 }
 

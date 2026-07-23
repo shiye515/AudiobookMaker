@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "status": "historical-pre-change-baseline-incomplete",
+  "captured_at": "2026-07-22",
+  "source_commit": "c6bfc633570de4c42d057dac5f668700fc5e772b",
+  "environment": {
+    "hardware_model": "Mac16,11",
+    "physical_memory_bytes": 25769803776,
+    "operating_system": "macOS 26.5.2",
+    "architecture": "arm64",
+    "xcode": "26.6 (17F113)"
+  },
+  "corpus": "docs/李光耀观天下.epub",
+  "corpus_sha256": "094d50f344d27e4184ffb6b50ea0e7b9465150840a1a5853c3d8e5c1929c4cc0",
+  "cold_start_definition": "new runtime actor with no loaded model session",
+  "hot_start_definition": "second capability handshake reusing the verified session",
+  "app_bundle_bytes": 220315648,
+  "failure_rate": 0.0,
+  "regression_thresholds": {
+    "app_bundle_bytes": 0.0,
+    "cold_load_seconds": 0.1,
+    "hot_load_seconds": 0.1,
+    "first_segment_seconds": 0.1,
+    "measured_rtf": 0.1,
+    "peak_resident_bytes": 0.15,
+    "failure_rate": 0.0
+  },
+  "models": {
+    "soniqo.speech-swift/cosyvoice3-0.5b-mlx-8bit-full": {
+      "model_version": "b52fc1c3bf5f3b947d40c250639e5ebe347ece11",
+      "voice_id": "default",
+      "cold_load_seconds": 2.048894166,
+      "hot_load_seconds": null,
+      "first_segment_seconds": 3.101444584,
+      "measured_rtf": 0.3322183962,
+      "peak_resident_bytes": 2563850240
+    },
+    "soniqo.speech-swift/qwen3-tts-12hz-0.6b-customvoice-mlx-bf16": {
+      "model_version": "3affbf656d9d6aa9255ec0b31cc90055605170bc+tokenizer-7dd38ad4",
+      "voice_id": "vivian",
+      "cold_load_seconds": 0.589582459,
+      "hot_load_seconds": null,
+      "first_segment_seconds": 2.674977709,
+      "measured_rtf": 0.4393371214,
+      "peak_resident_bytes": 7444480000
+    }
+  }
+}

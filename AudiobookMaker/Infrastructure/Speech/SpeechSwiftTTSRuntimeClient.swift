@@ -1,5 +1,6 @@
 import AVFoundation
 import CosyVoiceTTS
+import Dispatch
 import Foundation
 import Qwen3TTS
 
@@ -131,6 +132,7 @@ actor SpeechSwiftTTSRuntimeClient: TTSRuntimeClient {
     private let platformSupport: SpeechSwiftPlatformSupport
     private let sessionFactory: any SpeechSwiftSessionFactory
     private let synthesisTimeout: Duration
+    private let memoryPressureSource: DispatchSourceMemoryPressure
     private var loadedModelID: String?
     private var session: (any SpeechSwiftSession)?
     private var activeRequests: Set<UUID> = []
@@ -148,6 +150,19 @@ actor SpeechSwiftTTSRuntimeClient: TTSRuntimeClient {
         self.platformSupport = platformSupport
         self.sessionFactory = sessionFactory
         self.synthesisTimeout = synthesisTimeout
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .global(qos: .utility)
+        )
+        self.memoryPressureSource = source
+        source.setEventHandler { [weak self] in
+            Task { await self?.handleMemoryPressure() }
+        }
+        source.resume()
+    }
+
+    deinit {
+        memoryPressureSource.cancel()
     }
 
     func capabilities() async throws -> RuntimeCapabilities {
@@ -157,10 +172,16 @@ actor SpeechSwiftTTSRuntimeClient: TTSRuntimeClient {
     func capabilities(for modelID: String) async throws -> RuntimeCapabilities {
         guard platformSupport.status().isSupported else { throw RuntimeError.incompatibleRuntime }
         let manifest = try manifest(for: modelID)
-        let session = try await session(for: manifest)
-        let speakers = try await session.availableSpeakers()
+        let speakers: [String]
+        do {
+            speakers = try await session(for: manifest).availableSpeakers()
+        } catch {
+            await unloadSession()
+            throw error
+        }
         let voices = voices(for: modelID)
         guard Set(voices.map(\.id)).isSubset(of: Set(speakers)) else {
+            await unloadSession()
             throw RuntimeError.incompatibleRuntime
         }
         return RuntimeCapabilities(
@@ -169,6 +190,7 @@ actor SpeechSwiftTTSRuntimeClient: TTSRuntimeClient {
             version: manifest.version,
             maximumTextLength: 500,
             recommendedConcurrency: 1,
+            maximumSafeConcurrency: 1,
             supportsImmediateCancellation: false,
             outputFileType: "caf",
             supportedLanguages: ["zh-CN", "en-US", "ja-JP", "ko-KR"],
@@ -207,7 +229,9 @@ actor SpeechSwiftTTSRuntimeClient: TTSRuntimeClient {
         }
 
         let session = try await session(for: manifest)
-        let maximumChunkLength = request.modelID == TTSModelCatalog.qwen3TTSID ? 120 : 180
+        let modelChunkLimit = request.modelID == TTSModelCatalog.qwen3TTSID ? 120 : 180
+        let tokenBudget = request.modelID == TTSModelCatalog.qwen3TTSID ? 240 : 320
+        let maximumChunkLength = min(modelChunkLimit, max(1, tokenBudget / 2))
         let chunks = SpeechSwiftTextChunker.chunks(normalized, maximumLength: maximumChunkLength)
         var samples: [Float] = []
         do {
@@ -260,6 +284,9 @@ actor SpeechSwiftTTSRuntimeClient: TTSRuntimeClient {
             )
         } catch {
             try? FileManager.default.removeItem(at: request.outputURL)
+            if shouldUnloadSession(after: error) {
+                await unloadSession()
+            }
             throw error
         }
     }
@@ -270,9 +297,28 @@ actor SpeechSwiftTTSRuntimeClient: TTSRuntimeClient {
     }
 
     func unload() async {
+        await unloadSession()
+    }
+
+    func handleMemoryPressure() async {
+        guard activeRequests.isEmpty, !generationIsActive else { return }
+        await unloadSession()
+    }
+
+    private func unloadSession() async {
         await session?.unload()
         session = nil
         loadedModelID = nil
+    }
+
+    private func shouldUnloadSession(after error: any Error) -> Bool {
+        guard let runtimeError = error as? RuntimeError else { return true }
+        switch runtimeError {
+        case .cancelled, .timedOut, .connectionInvalidated:
+            return false
+        default:
+            return true
+        }
     }
 
     private func session(for manifest: DownloadableModelManifest) async throws -> any SpeechSwiftSession {

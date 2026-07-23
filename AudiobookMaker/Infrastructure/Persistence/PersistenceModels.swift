@@ -146,6 +146,7 @@ final class ConversionJobRecord {
     var voiceID: String?
     var requestPurposeRaw: String = "conversion"
     var legacyRuntimeDiagnostic: String?
+    var requiresRestart: Bool = false
     var stateRaw: String
     var priority: Int
     @Attribute(.unique) var queueOrdinal: Int64
@@ -197,6 +198,7 @@ final class AppSettingRecord {
     var selectedVoiceID: String?
     var recentVoicesData: Data?
     var lastExportDirectoryBookmark: Data?
+    var migrationVersion: Int = 0
 
     init(
         key: String = "default",

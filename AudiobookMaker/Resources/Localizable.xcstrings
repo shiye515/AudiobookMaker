@@ -447,6 +447,16 @@
       }
     },
     "CosyVoice3 0.5B MLX 8-bit" : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "CosyVoice3 0.5B MLX 8-bit"
+          }
+        }
+      }
+    },
+    "CosyVoice3 与 Qwen3-TTS 需要原生 Apple Silicon 和 Metal。高内存本地模型会将安全并发限制为 1。" : {
 
     },
     "Hello. This is a local voice preview from AudiobookMaker." : {
@@ -473,51 +483,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "导入 EPUB"
-          }
-        }
-      }
-    },
-    "Kokoro 使用 CPU；CosyVoice3 与 Qwen3-TTS 需要原生 Apple Silicon 和 Metal。高内存本地模型会将安全并发限制为 1。" : {
-
-    },
-    "Kokoro 在 Intel 与 Apple 芯片上都使用 CPU 推理，并会将并发限制为 1。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kokoro uses CPU inference on both Intel and Apple silicon and limits concurrency to 1."
-          }
-        }
-      }
-    },
-    "Kokoro 多语言 Int8" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kokoro Multilingual Int8"
-          }
-        }
-      }
-    },
-    "Kokoro 模型与随包资源许可" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Kokoro Model and Bundled Resource Licenses"
-          }
-        }
-      }
-    },
-    "Kokoro 模型需在“模型”页面单独下载；权重不包含在 App 中。" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Download the Kokoro model separately from the Models page; model weights are not included in the app."
           }
         }
       }
@@ -553,7 +518,14 @@
       }
     },
     "MLX Swift · MIT" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "MLX Swift · MIT"
+          }
+        }
+      }
     },
     "Model" : {
       "localizations" : {
@@ -565,31 +537,25 @@
         }
       }
     },
-    "ONNX Runtime · MIT" : {
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "ONNX Runtime · MIT"
-          }
-        }
-      }
-    },
     "Qwen3-TTS 0.6B CustomVoice" : {
-
-    },
-    "sherpa-onnx · Apache-2.0" : {
       "localizations" : {
         "en" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "sherpa-onnx · Apache-2.0"
+            "value" : "Qwen3-TTS 0.6B CustomVoice"
           }
         }
       }
     },
     "speech-swift · Apache-2.0" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "speech-swift · Apache-2.0"
+          }
+        }
+      }
     },
     "unknown.author" : {
       "extractionState" : "stale",
@@ -872,7 +838,14 @@
       }
     },
     "可下载模型需在“模型”页面单独安装；所有权重都位于 App bundle 之外，合成时不会联网。" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Install downloadable models separately from the Models screen. All weights stay outside the app bundle, and synthesis does not use the network."
+          }
+        }
+      }
     },
     "可以从已保存的进度继续转换。" : {
       "localizations" : {
@@ -1312,6 +1285,7 @@
       }
     },
     "打开已安装模型的 LICENSE" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -2390,10 +2364,24 @@
       }
     },
     "需要原生 Apple Silicon" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Requires native Apple Silicon"
+          }
+        }
+      }
     },
     "需要原生 Apple Silicon、macOS 15 或更高版本及 Metal" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Requires native Apple Silicon, macOS 15 or later, and Metal"
+          }
+        }
+      }
     },
     "需要处理" : {
       "localizations" : {

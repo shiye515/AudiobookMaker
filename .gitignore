@@ -62,3 +62,5 @@ abm.zip
 # 本地截图原稿（精修后的 docs/screenshots/*.png 可提交）
 docs/screenshots/*.mov
 docs/screenshots/*.heic
+docs/screenshots/IMG_*.PNG
+docs/screenshots/IMG_*.png

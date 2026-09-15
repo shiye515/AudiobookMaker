@@ -1,6 +1,6 @@
 # abm / AudiobookMaker
 
-**Audiobook Maker** — 把 EPUB / 文本变成本地有声书的 macOS 应用。
+**Audiobook Maker**（界面名：讯音有声书）— 把 EPUB / 文本变成本地有声书的 macOS 应用。
 
 导入电子书 → 按目录**节级**拆章节 → 用 **CosyVoice3** 在本机批量合成 → 导出带章节的 **M4B**。
 
@@ -10,6 +10,26 @@
 [![Chip](https://img.shields.io/badge/CPU-Apple%20Silicon-lightgrey)](#系统要求)
 
 > SwiftUI · 本地推理 · 不上传你的书
+
+| 书架 | 章节队列 |
+|:---:|:---:|
+| ![书架](docs/screenshots/library.png) | ![章节队列](docs/screenshots/book-detail.png) |
+
+| 试听播放条 | 模型与引擎 |
+|:---:|:---:|
+| ![播放条](docs/screenshots/playback-bar.png) | ![模型](docs/screenshots/model.png) |
+
+<p align="center">
+  <img src="docs/screenshots/export-m4b.png" alt="导出 M4B" width="720">
+</p>
+
+### 导出后，在 iPhone「图书」里听
+
+M4B 同步到手机后，封面、进度与**章节列表**均可直接使用（章节名来自应用内层级标题）：
+
+| 播放页 | 章节列表 |
+|:---:|:---:|
+| <img src="docs/screenshots/phone-listen-1.png" alt="iPhone 播放页" width="240"> | <img src="docs/screenshots/phone-listen-2.png" alt="iPhone 章节列表" width="240"> |
 
 ---
 
@@ -40,7 +60,7 @@
 
 ```bash
 git clone https://github.com/shiye515/AudiobookMaker.git
-cd abm
+cd AudiobookMaker
 open abm.xcodeproj
 ```
 

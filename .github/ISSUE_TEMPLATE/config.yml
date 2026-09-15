@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 使用问题 / Discussion
+    url: https://github.com/shiye515/AudiobookMaker/discussions
+    about: 安装、模型下载、导出等使用问题优先看 Discussions 与 docs/FAQ.md
+  - name: 安全漏洞
+    url: https://github.com/shiye515/AudiobookMaker/security/advisories/new
+    about: 请勿公开提交可利用的安全问题，见 SECURITY.md

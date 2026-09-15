@@ -1,0 +1,319 @@
+import Foundation
+import MLX
+import AudioCommon
+
+/// Streaming chat backend for the hand-written `Gemma4Model` (Gemma 4 text, E2B/E4B MLX int4).
+///
+/// Mirrors `Qwen35MLXChat`: load tokenizer + config + weights, encode the chat template, prefill,
+/// then decode one token per step against the incremental KV cache. Two Gemma-4 specifics:
+///   • the chat template is the `<|turn>{role}\n…<turn|>\n` form (NOT the older `<start_of_turn>`),
+///     terminated by `<|turn>model\n` for the generation prompt — see `Gemma4ChatTemplate`.
+///   • a reasoning *channel* `<|channel>thought\n…\n<channel|>` is emitted before the answer; for a
+///     voice assistant we suppress it and stream only the post-channel answer text.
+public final class Gemma4Chat: @unchecked Sendable {
+    /// Gemma-4 architecture config (used by the model + parity harness).
+    public let denseConfig: Gemma4DenseConfig
+    let model: Gemma4Model
+    public let gemmaTokenizer: Gemma4Tokenizer
+    /// GPT-2-scheme tokenizer kept only to satisfy `Qwen35ChatBackend.tokenizer`; the generation
+    /// path uses `gemmaTokenizer` (SentencePiece byte-fallback) for correct encode/decode.
+    public let tokenizer: ChatTokenizer
+    var state: Gemma4Model.InferenceState
+    var _isLoaded = true
+
+    private init(config: Gemma4DenseConfig, gemmaTokenizer: Gemma4Tokenizer,
+                 tokenizer: ChatTokenizer, model: Gemma4Model) {
+        self.denseConfig = config
+        self.gemmaTokenizer = gemmaTokenizer
+        self.tokenizer = tokenizer
+        self.model = model
+        self.state = .initial(config: config)
+    }
+
+    // MARK: - Loading
+
+    /// Load from a local MLX model directory (config.json + tokenizer.json + safetensors).
+    public static func fromDirectory(
+        _ directory: URL, progressHandler: ((Double, String) -> Void)? = nil
+    ) throws -> Gemma4Chat {
+        let config = try Gemma4DenseConfig.load(from: directory.appendingPathComponent("config.json"))
+        let gemmaTok = Gemma4Tokenizer()
+        try gemmaTok.load(from: directory)
+        let tok = ChatTokenizer()
+        try? tok.load(from: directory)   // best-effort; only the protocol surface needs it
+        let model = Gemma4Model(config: config)
+        try Gemma4WeightLoader.loadWeights(into: model, from: directory, progressHandler: progressHandler)
+        return Gemma4Chat(config: config, gemmaTokenizer: gemmaTok, tokenizer: tok, model: model)
+    }
+
+    /// Download + load from HuggingFace (e.g. `aufklarer/gemma-4-E4B-it-MLX-4bit`).
+    public static func fromPretrained(
+        modelId: String = "aufklarer/gemma-4-E4B-it-MLX-4bit",
+        cacheDir: URL? = nil,
+        offlineMode: Bool = false,
+        progressHandler: ((Double, String) -> Void)? = nil
+    ) async throws -> Gemma4Chat {
+        let cacheDir = try cacheDir ?? HuggingFaceDownloader.getCacheDirectory(for: modelId)
+        try await HuggingFaceDownloader.downloadWeights(
+            modelId: modelId,
+            to: cacheDir,
+            additionalFiles: [
+                "config.json", "tokenizer.json", "tokenizer_config.json",
+                "generation_config.json", "model.safetensors", "model.safetensors.index.json",
+            ],
+            offlineMode: offlineMode,
+            progressHandler: { progressHandler?($0 * 0.6, "Downloading...") })
+        return try fromDirectory(cacheDir) { p, m in progressHandler?(0.6 + p * 0.4, m) }
+    }
+
+    // MARK: - State
+
+    public func resetState() { state = .initial(config: denseConfig) }
+
+    // MARK: - Generation
+
+    /// Buffered (non-streaming) generation — returns the full thinking-free reply.
+    public func generate(
+        messages: [ChatMessage], sampling: ChatSamplingConfig = .default
+    ) throws -> String {
+        var reply = ""
+        let sem = DispatchSemaphore(value: 0)
+        var err: Error?
+        Task {
+            do { for try await chunk in generateStream(messages: messages, sampling: sampling) { reply += chunk } }
+            catch { err = error }
+            sem.signal()
+        }
+        sem.wait()
+        if let err { throw err }
+        return reply
+    }
+
+    /// Streaming generation. Suppresses the reasoning channel and only yields answer text.
+    public func generateStream(
+        messages: [ChatMessage], sampling: ChatSamplingConfig = .default
+    ) -> AsyncThrowingStream<String, Error> {
+        generateStream(
+            messages: messages,
+            sampling: sampling,
+            shouldContinue: { true })
+    }
+
+    /// Streaming generation with cooperative token-boundary cancellation.
+    ///
+    /// MLX evaluation of one token and the initial prompt prefill are atomic,
+    /// but the caller can stop before the next token is scheduled. Returning
+    /// from `decode` also guarantees the producer is finished before a shared
+    /// model is used by the next request.
+    public func generateStream(
+        messages: [ChatMessage],
+        sampling: ChatSamplingConfig = .default,
+        shouldContinue: @escaping @Sendable () -> Bool
+    ) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                let promptTokens = Gemma4ChatTemplate.encode(
+                    messages: messages, tokenizer: self.gemmaTokenizer)
+                self.decode(
+                    promptTokens: promptTokens,
+                    sampling: sampling,
+                    shouldContinue: shouldContinue,
+                    onText: { text in continuation.yield(text) })
+                continuation.finish()
+            }
+        }
+    }
+
+    /// One decode pass: prefill, then a token per step until an end token or the budget runs out.
+    ///
+    /// `onText` receives answer text as the reasoning-channel filter completes it (often nothing —
+    /// one character can span several tokens); `onToken` receives every sampled id, which is what
+    /// the greedy-parity test compares against the host sampler.
+    ///
+    /// The step is one lazy MLX graph — model forward, suppression, penalty, top-K/top-P and the
+    /// draw — and reading the sampled id is the only point it is waited on. The previous shape
+    /// evaluated the logits, pulled all 262k of them to the host, and sampled there: two
+    /// synchronisations and a megabyte per token.
+    func decode(
+        promptTokens: [Int],
+        sampling: ChatSamplingConfig,
+        shouldContinue: () -> Bool = { true },
+        onToken: (Int) -> Void = { _ in },
+        onText: (String) -> Void
+    ) {
+        resetState()
+
+        // Prefill. Only the final position is sampled, so the lm_head runs on that row alone —
+        // over a long prompt the discarded rows are gigabytes of 262k-wide logits.
+        let promptArray = MLXArray(promptTokens.map { Int32($0) }).expandedDimensions(axis: 0)
+        var logits = model.lastTokenLogits(inputIds: promptArray, state: &state)
+
+        var history = promptTokens
+        var produced = false
+        var filter = Gemma4AnswerFilter(tokenizer: gemmaTokenizer)
+        let endTokens = Array(gemmaTokenizer.eosTokenIds)
+
+        var remaining = sampling.maxTokens
+        while remaining > 0 && shouldContinue() {
+            remaining -= 1
+
+            let next = ChatSampler.sampleOnDevice(
+                logits: logits,
+                config: sampling,
+                // Don't let the model end the turn before emitting any visible answer.
+                suppressing: produced ? [] : endTokens,
+                previousTokens: history,
+                vocabSize: denseConfig.vocabSize,
+                uniform: sampling.temperature > 0 ? Float.random(in: 0 ..< 1) : 0
+            ).item(Int.self)
+
+            if gemmaTokenizer.eosTokenIds.contains(next) { break }
+            history.append(next)
+            onToken(next)
+
+            let text = filter.consume(next)
+            if !text.isEmpty { produced = true; onText(text) }
+
+            // Decode one step — but not a step whose logits nothing will read. The budget's last
+            // token used to be followed by a full forward that was evaluated and thrown away.
+            guard remaining > 0 else { break }
+            let arr = MLXArray([Int32(next)]).expandedDimensions(axis: 0)
+            logits = model.forward(inputIds: arr, state: &state)
+        }
+
+        if let tail = filter.flush(), !tail.isEmpty { onText(tail) }
+    }
+
+    // MARK: - Parity harness (unchanged surface used by Gemma4ParityTests)
+
+    /// Numeric-parity helper: argmax + next-token logits for a fixed prompt (no sampling, no cache).
+    public func nextTokenArgmax(promptTokens: [Int]) -> (argmax: Int, logit: Float, top5: [(Int, Float)]) {
+        let arr = MLXArray(promptTokens.map { Int32($0) }).expandedDimensions(axis: 0)
+        let logits = model.forward(inputIds: arr)
+        eval(logits)
+        let t = logits.dim(1)
+        let last = logits[0, t - 1].asType(.float32)
+        eval(last)
+        let l = Array(last.asArray(Float.self).prefix(denseConfig.vocabSize))
+        var best = 0
+        for i in 1..<l.count where l[i] > l[best] { best = i }
+        let top5 = l.enumerated().sorted { $0.element > $1.element }.prefix(5).map { ($0.offset, $0.element) }
+        return (best, l[best], Array(top5))
+    }
+
+    /// Sanity helper: argmax of the next token computed through the incremental KV-cache prefill
+    /// (used by tests to confirm the cache path matches `nextTokenArgmax`'s single forward).
+    public func firstTokenViaCache(promptTokens: [Int]) -> Int {
+        var st = Gemma4Model.InferenceState.initial(config: denseConfig)
+        let arr = MLXArray(promptTokens.map { Int32($0) }).expandedDimensions(axis: 0)
+        let logits = model.forward(inputIds: arr, state: &st)
+        eval(logits)
+        let t = logits.dim(1)
+        let last = logits[0, t - 1].asType(.float32)
+        eval(last)
+        let l = Array(last.asArray(Float.self).prefix(denseConfig.vocabSize))
+        var best = 0
+        for i in 1..<l.count where l[i] > l[best] { best = i }
+        return best
+    }
+
+}
+
+// MARK: - Qwen35ChatBackend conformance
+
+extension Gemma4Chat: Qwen35ChatBackend {
+    /// Bridge the Gemma-4 config to the `Qwen3ChatConfig` shape the backend protocol exposes.
+    /// Only the fields consumers read (vocab size, eos, etc.) are meaningful here.
+    public var config: Qwen3ChatConfig {
+        Qwen3ChatConfig(
+            hiddenSize: denseConfig.hiddenSize,
+            numHiddenLayers: denseConfig.numHiddenLayers,
+            numAttentionHeads: denseConfig.numAttentionHeads,
+            numKeyValueHeads: denseConfig.numKeyValueHeads,
+            headDim: denseConfig.headDim,
+            intermediateSize: denseConfig.intermediateSize,
+            vocabSize: denseConfig.vocabSize,
+            maxSeqLen: denseConfig.maxPositionEmbeddings,
+            ropeTheta: Double(denseConfig.fullRopeTheta),
+            rmsNormEps: Double(denseConfig.rmsNormEps),
+            eosTokenId: denseConfig.eosTokenId,
+            padTokenId: 0,
+            quantization: "int\(denseConfig.quantBits)",
+            quantizationBits: denseConfig.quantBits,
+            quantizationGroupSize: denseConfig.quantGroupSize,
+            modelType: nil,
+            layerTypes: denseConfig.layerTypes,
+            fullAttentionInterval: nil,
+            linearNumKeyHeads: nil,
+            linearKeyHeadDim: nil,
+            linearNumValueHeads: nil,
+            linearValueHeadDim: nil,
+            linearConvKernelDim: nil,
+            partialRotaryFactor: Double(denseConfig.fullPartialRotaryFactor),
+            tieWordEmbeddings: denseConfig.tieWordEmbeddings)
+    }
+}
+
+// MARK: - Reasoning-channel filter
+
+/// Streaming filter that suppresses Gemma 4's reasoning channel and emits only the spoken answer.
+///
+/// Gemma 4 may emit `<|channel>thought\n …thinking… \n<channel|>` (ids 100 … 101) before the answer.
+/// We drop every token from the opening `<|channel>` (100) through the matching `<channel|>` (101),
+/// and never emit special/markup tokens. Everything else is byte-accumulated and decoded as UTF-8
+/// (BPE can split one character across tokens). Because the channel markers are single vocab tokens,
+/// id-matching is exact; the inner thought text — which *can* span many tokens — is still fully
+/// skipped, so the filter is robust to multi-token reasoning blocks.
+struct Gemma4AnswerFilter {
+    private let tokenizer: Gemma4Tokenizer
+    private let channelOpen = 100
+    private let channelClose = 101
+    private var inThoughtChannel = false
+    private var pending: [UInt8] = []
+
+    init(tokenizer: Gemma4Tokenizer) { self.tokenizer = tokenizer }
+
+    /// Feed one generated token id; returns any answer text now decodable (often empty).
+    mutating func consume(_ id: Int) -> String {
+        if id == channelOpen { inThoughtChannel = true; return "" }
+        if id == channelClose { inThoughtChannel = false; return "" }
+        guard !inThoughtChannel, !tokenizer.isSpecialToken(id) else { return "" }
+        pending.append(contentsOf: tokenizer.tokenBytes(id))
+        let (text, rest) = ChatTokenizer.decodeUTF8Prefix(pending)
+        pending = rest
+        return text
+    }
+
+    /// Flush any trailing bytes (lossy) when the stream ends.
+    mutating func flush() -> String? {
+        guard !pending.isEmpty else { return nil }
+        let s = String(decoding: pending, as: UTF8.self)
+        pending = []
+        return s
+    }
+}
+
+// MARK: - Gemma 4 chat template
+
+/// Renders the Gemma 4 `<|turn>` chat template (matches the model's `chat_template.jinja`):
+///
+/// ```
+/// <bos><|turn>system\n{system}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n
+/// ```
+///
+/// Special token ids (confirmed against the model tokenizer): `<bos>`=2, `<|turn>`=105,
+/// `<turn|>`=106, `\n`=107, role words `system`/`user`/`model`. We render via the tokenizer's
+/// encode so a vocab change can't desync the ids.
+enum Gemma4ChatTemplate {
+    static func encode(messages: [ChatMessage], tokenizer: Gemma4Tokenizer) -> [Int] {
+        var tokens: [Int] = [tokenizer.bosTokenId]
+        for m in messages {
+            let role = (m.role == .assistant) ? "model" : m.role.rawValue
+            tokens.append(contentsOf: tokenizer.encode("<|turn>" + role + "\n"))
+            tokens.append(contentsOf: tokenizer.encode(m.content))
+            tokens.append(contentsOf: tokenizer.encode("<turn|>\n"))
+        }
+        tokens.append(contentsOf: tokenizer.encode("<|turn>model\n"))
+        return tokens
+    }
+}

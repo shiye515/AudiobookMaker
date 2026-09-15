@@ -9,6 +9,12 @@ public enum DownloadError: Error, LocalizedError {
     /// A download attempt made no progress for `seconds` and was aborted
     /// so the caller's retry loop can fire instead of hanging.
     case stalled(modelId: String, seconds: Int)
+    /// Downloaded bytes did not match the digest the Hub published for them.
+    case checksumMismatch(file: String, expected: String, actual: String)
+    /// Every attempt failed for a reason that looks like the network being
+    /// unreachable, rather than the repository being wrong. Distinguished from
+    /// `failedToDownload` so a complete cache can still be used.
+    case networkUnavailable(modelId: String, detail: String)
 
     public var errorDescription: String? {
         switch self {
@@ -18,44 +24,62 @@ public enum DownloadError: Error, LocalizedError {
             return "Refusing to write unsafe remote file name: \(file)"
         case .stalled(let modelId, let seconds):
             return "Download stalled for \(modelId): no progress in \(seconds)s"
+        case .checksumMismatch(let file, let expected, let actual):
+            return "Checksum mismatch for \(file): expected \(expected), got \(actual)"
+        case .networkUnavailable(let modelId, let detail):
+            return "Network unavailable while fetching \(modelId): \(detail)"
         }
     }
 }
 
 /// HuggingFace model downloader — shared between ASR, TTS, VAD, etc.
 ///
-/// Uses `HubApi` from the swift-transformers `Hub` module for downloads,
-/// which provides HF token auth and metadata tracking. Files that finished
-/// downloading are skipped on retry (etag/commit-hash check), but a file
-/// interrupted mid-transfer restarts from byte 0 — there is no usable
-/// mid-file resume in the current Hub stack, which is why the stall guard
-/// and retry ladder below favor patience over fast abort.
+/// Every entry point resolves the repository once against the Hub tree API and
+/// then transfers through the same engine: large files as concurrent byte
+/// ranges that resume mid-file, progress weighted by real bytes, and LFS
+/// digests checked before a file is accepted.
+///
+/// The three functions differ only in how they choose files — glob discovery
+/// (`downloadWeights`) or an explicit list (`downloadFiles`,
+/// `downloadFilesByteWeighted`) — not in how they fetch them.
 public enum HuggingFaceDownloader {
 
     // MARK: - Cache Directory
 
     /// Get cache directory for a model.
     ///
-    /// Returns the old flat cache path if it already contains model files (preserving
-    /// ~10 GB of existing cached models), otherwise returns the new Hub-style path.
+    /// Returns the old flat cache path if it already contains model files
+    /// (preserving existing cached models), otherwise the Hub-style path.
+    ///
+    /// The legacy probe is memoized: it walks a directory and may parse a shard
+    /// index, and this is called on essentially every model load. The layout of
+    /// a cache directory does not change under a running process, so answering
+    /// it once per model is enough.
     public static func getCacheDirectory(for modelId: String, basePath: URL? = nil, cacheDirName: String = "qwen3-speech") throws -> URL {
         let base = basePath ?? resolveBaseCacheDir(cacheDirName: cacheDirName)
-        let fm = FileManager.default
 
-        // Check old (flat) cache path for backward compat:
-        //   ~/Library/Caches/qwen3-speech/aufklarer_Qwen3-ASR-0.6B-MLX-4bit/
+        //   old: ~/Library/Caches/qwen3-speech/aufklarer_Model/
+        //   new: ~/Library/Caches/qwen3-speech/models/aufklarer/Model/
         let oldDir = base.appendingPathComponent(sanitizedCacheKey(for: modelId), isDirectory: true)
-        if weightsExist(in: oldDir) {
+        if legacyCacheDirectoryIsPopulated(oldDir) {
             return oldDir
         }
 
-        // New Hub-style path:
-        //   ~/Library/Caches/qwen3-speech/models/aufklarer/Qwen3-ASR-0.6B-MLX-4bit/
         let hub = HubApi(downloadBase: base)
-        let repo = Hub.Repo(id: modelId)
-        let dir = hub.localRepoLocation(repo)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = hub.localRepoLocation(Hub.Repo(id: modelId))
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
+    }
+
+    private static let legacyCacheProbe = OSAllocatedUnfairLock(initialState: [String: Bool]())
+
+    private static func legacyCacheDirectoryIsPopulated(_ directory: URL) -> Bool {
+        legacyCacheProbe.withLock { cache in
+            if let known = cache[directory.path] { return known }
+            let populated = weightsExist(in: directory)
+            cache[directory.path] = populated
+            return populated
+        }
     }
 
     // MARK: - Weight Existence Check
@@ -68,10 +92,8 @@ public enum HuggingFaceDownloader {
     ]
 
     /// Returns `true` when `directory` contains at least one entry
-    /// whose extension matches `weightFileExtensions`. Used by
-    /// `downloadWeights` to short-circuit network requests when
-    /// `offlineMode: true` is set on caches that contain only CoreML
-    /// bundles and no `.safetensors` files.
+    /// whose extension matches `weightFileExtensions`, and — for a sharded
+    /// bundle — every shard its index names.
     public static func weightsExist(in directory: URL) -> Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: directory.path) else { return false }
@@ -89,7 +111,7 @@ public enum HuggingFaceDownloader {
         // its index is present — a stalled download can leave later shards
         // fully written while earlier ones are missing, and a half-loaded
         // model runs with random weights (observed as near-silent TTS).
-        let indexURL = directory.appendingPathComponent("model.safetensors.index.json")
+        let indexURL = directory.appendingPathComponent(safetensorsIndexName)
         if fm.fileExists(atPath: indexURL.path),
             let data = try? Data(contentsOf: indexURL),
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -106,13 +128,15 @@ public enum HuggingFaceDownloader {
 
     // MARK: - Download
 
-    /// Download model files from HuggingFace using `HubApi.snapshot()`.
+    /// Download model files from HuggingFace, discovering weights by glob.
     ///
     /// Builds glob patterns from the file list:
     /// - Always includes `config.json`
-    /// - If `additionalFiles` doesn't contain `.safetensors` files, adds `*.safetensors`
-    ///   and `model.safetensors.index.json` to discover sharded weights automatically
-    /// - All entries in `additionalFiles` are added as-is (they work as glob patterns)
+    /// - If `additionalFiles` doesn't contain `.safetensors` files, adds
+    ///   `*.safetensors` and `model.safetensors.index.json` to discover
+    ///   sharded weights automatically
+    /// - All entries in `additionalFiles` are added as-is (they work as glob
+    ///   patterns, including `encoder.mlmodelc/**` for CoreML bundles)
     public static func downloadWeights(
         modelId: String,
         to directory: URL,
@@ -121,74 +145,91 @@ public enum HuggingFaceDownloader {
         retryDelaysSeconds: [Int]? = nil,
         progressHandler: ((Double) -> Void)? = nil
     ) async throws {
-        // Skip network requests when weights are already cached
-        if offlineMode && weightsExist(in: directory) {
+        if offlineMode {
+            guard weightsExist(in: directory) else {
+                throw DownloadError.failedToDownload(
+                    "\(modelId) offline cache miss: no model weights in \(directory.path)")
+            }
             progressHandler?(1.0)
             return
         }
 
-        var globs: [String] = ["config.json"]
-
-        let hasExplicitWeights = additionalFiles.contains { $0.hasSuffix(".safetensors") }
-        if !hasExplicitWeights {
-            globs.append("*.safetensors")
-            globs.append("model.safetensors.index.json")
-        }
-        for file in additionalFiles where !globs.contains(file) {
-            globs.append(file)
-        }
-
-        // Derive the download base from the directory.
-        // getCacheDirectory returns either:
-        //   old: base/cacheKey         (flat, already has weights — won't reach here)
-        //   new: base/models/org/model  (Hub-style)
-        // For Hub API we need `base` as downloadBase.
-        //
-        // Forward `offlineMode` explicitly so HubApi doesn't fall through to
-        // its internal NWPathMonitor auto-detect, which on macOS can briefly
-        // report `.unsatisfied` and then refuse to download (manifesting as
-        // "Offline mode error: No files available locally for this repository"
-        // for a freshly-requested model).
-        let hub = makeHubApi(for: modelId, repoDir: directory, offlineMode: offlineMode)
-        let repo = Hub.Repo(id: modelId)
-
-        // Retry with capped backoff — HuggingFace can timeout on slow
-        // connections or rate-limit, and flaky networks (hotspots, captive
-        // portals) drop out for minutes at a time. Each attempt is wrapped
-        // in a progress-stall guard so a wedged mid-transfer (which
-        // `hub.snapshot` won't surface on its own) aborts and retries
-        // instead of hanging until the CI job is killed.
-        //
-        // No retries in offline mode: the failure is a deterministic local
-        // cache miss, and 110 s of backoff can't change what's on disk.
-        let delays = offlineMode ? [] : (retryDelaysSeconds ?? downloadRetryDelaysSeconds)
-        let maxAttempts = delays.count + 1
-        var lastError: Error?
-        for attempt in 1...maxAttempts {
-            do {
-                try await withDownloadStallGuard(modelId: modelId, watchDirectory: directory) { reportProgress in
-                    try await hub.snapshot(from: repo, matching: globs) { progress in
-                        reportProgress(progress.fractionCompleted)
-                        progressHandler?(progress.fractionCompleted)
-                    }
-                }
-                return  // Success
-            } catch {
-                lastError = error
-                if attempt < maxAttempts {
-                    try await Task.sleep(for: .seconds(delays[attempt - 1]))
-                }
+        let globs: [String] = {
+            var patterns: [String] = ["config.json"]
+            let hasExplicitWeights = additionalFiles.contains { $0.hasSuffix(".safetensors") }
+            if !hasExplicitWeights {
+                patterns.append("*.safetensors")
+                patterns.append(safetensorsIndexName)
             }
+            for file in additionalFiles where !patterns.contains(file) {
+                patterns.append(file)
+            }
+            return patterns
+        }()
+
+        do {
+            try await performDownload(
+                modelId: modelId,
+                directory: directory,
+                retryDelaysSeconds: retryDelaysSeconds,
+                progressHandler: { fraction, _, _, _ in progressHandler?(fraction) }
+            ) {
+                let manifest = try await fetchManifest(modelId: modelId)
+                var selection = manifest.matching(globs: globs)
+                // Globbing is discovery, so it needs narrowing when a repo
+                // publishes the same tensors twice — see `applyingShardIndex`.
+                if let indexData = await fetchShardIndex(modelId: modelId, manifest: manifest) {
+                    selection = applyingShardIndex(to: selection, indexData: indexData)
+                }
+                return selection
+            }
+        } catch let error as DownloadError {
+            // The Hub was unreachable. If everything this call would have
+            // fetched is already on disk, the model can still load — a network
+            // blip should not fail a load that needs no bytes. Anything else
+            // (a 404, a checksum failure) is a real answer and propagates.
+            guard case .networkUnavailable = error,
+                  cachedBundleSatisfies(globs: globs, in: directory)
+            else { throw error }
+            AudioLog.download.warning(
+                "\(modelId, privacy: .public): Hub unreachable, using the complete cache in \(directory.path, privacy: .public)")
+            progressHandler?(1.0)
+            return
         }
-        throw DownloadError.failedToDownload(
-            "\(modelId) after \(maxAttempts) attempt\(maxAttempts == 1 ? "" : "s") "
-                + "(target: \(directory.path)): "
-                + (lastError?.localizedDescription ?? "unknown"))
+
+        // Caches populated before weight selection consulted the index may hold
+        // a consolidated copy of the shards, which the loader would read on top
+        // of them. Cleaning up after the fact is the only way those caches ever
+        // stop paying for it.
+        if let indexData = try? Data(
+            contentsOf: directory.appendingPathComponent(safetensorsIndexName)) {
+            removeRedundantConsolidatedWeights(in: directory, indexData: indexData)
+        }
     }
 
-    /// Download an explicit list of files from HuggingFace without adding any
-    /// implicit weight globs. This is useful for overlaying tokenizer or config
-    /// assets from a second repository on top of an existing cache.
+    /// Whether the cache holds everything a `downloadWeights` call asked for.
+    ///
+    /// Stricter than `weightsExist` alone, which only answers "are there any
+    /// weights here" — a cache with weights but no tokenizer would pass that
+    /// and then fail at load, blaming the wrong thing. The weight globs are
+    /// checked by `weightsExist` (which also verifies every shard an index
+    /// names); the caller's own patterns are checked literally.
+    static func cachedBundleSatisfies(globs: [String], in directory: URL) -> Bool {
+        guard weightsExist(in: directory) else { return false }
+        let discoveryPatterns: Set<String> = ["*.safetensors", safetensorsIndexName]
+        let callerPatterns = globs.filter { !discoveryPatterns.contains($0) }
+        return firstUnsatisfiedPattern(callerPatterns, in: directory) == nil
+    }
+
+    /// Download a list of files without adding any implicit weight globs.
+    /// Useful for overlaying tokenizer or config assets from a second
+    /// repository on top of an existing cache.
+    ///
+    /// Entries are glob patterns, not literal names — `LocalVQEEchoCanceller`
+    /// asks for `LocalVQEAECResidualMask.mlmodelc/**`, for instance. A pattern
+    /// that matches nothing contributes nothing and is not an error, matching
+    /// what this function did when it was backed by `HubApi.snapshot`; callers
+    /// that need a file to exist find out when they try to load it.
     public static func downloadFiles(
         modelId: String,
         to directory: URL,
@@ -202,44 +243,79 @@ public enum HuggingFaceDownloader {
             return
         }
 
-        let hub = makeHubApi(for: modelId, repoDir: directory, offlineMode: offlineMode)
-        let repo = Hub.Repo(id: modelId)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let globs = files.map { $0 }
-        // Same retry semantics as downloadWeights, including the offline
-        // no-retry rule — keep the two loops in lockstep.
-        let delays = offlineMode ? [] : (retryDelaysSeconds ?? downloadRetryDelaysSeconds)
-        let maxAttempts = delays.count + 1
-        var lastError: Error?
-        for attempt in 1...maxAttempts {
-            do {
-                try await withDownloadStallGuard(modelId: modelId, watchDirectory: directory) { reportProgress in
-                    try await hub.snapshot(from: repo, matching: globs) { progress in
-                        reportProgress(progress.fractionCompleted)
-                        progressHandler?(progress.fractionCompleted)
-                    }
+        if offlineMode {
+            if let missing = firstUnsatisfiedPattern(files, in: directory) {
+                throw DownloadError.failedToDownload(
+                    "\(modelId) offline cache miss: nothing matching \(missing) in \(directory.path)")
+            }
+            progressHandler?(1.0)
+            return
+        }
+
+        do {
+            try await performDownload(
+                modelId: modelId,
+                directory: directory,
+                retryDelaysSeconds: retryDelaysSeconds,
+                progressHandler: { fraction, _, _, _ in progressHandler?(fraction) }
+            ) {
+                try await fetchManifest(modelId: modelId).matching(globs: files)
+            }
+        } catch let error as DownloadError {
+            guard case .networkUnavailable = error,
+                  firstUnsatisfiedPattern(files, in: directory) == nil
+            else { throw error }
+            AudioLog.download.warning(
+                "\(modelId, privacy: .public): Hub unreachable, every requested file is already cached")
+            progressHandler?(1.0)
+            return
+        }
+    }
+
+    /// First pattern in `patterns` with no match on disk, or `nil` if all are
+    /// satisfied. Used to answer offline requests without the network.
+    static func firstUnsatisfiedPattern(_ patterns: [String], in directory: URL) -> String? {
+        var localPaths: [String]?
+        for pattern in patterns {
+            if pattern.contains("*") || pattern.contains("?") || pattern.contains("[") {
+                // Resolving a pattern needs the local file list; build it once
+                // and only if some pattern actually requires it.
+                let paths = localPaths ?? localRelativePaths(in: directory)
+                localPaths = paths
+                if !paths.contains(where: { fnmatch(pattern, $0, 0) == 0 }) {
+                    return pattern
                 }
-                return
-            } catch {
-                lastError = error
-                if attempt < maxAttempts {
-                    try await Task.sleep(for: .seconds(delays[attempt - 1]))
-                }
+            } else if !FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(pattern).path) {
+                return pattern
             }
         }
-        throw DownloadError.failedToDownload(
-            "\(modelId) after \(maxAttempts) attempt\(maxAttempts == 1 ? "" : "s") "
-                + "(target: \(directory.path)): "
-                + (lastError?.localizedDescription ?? "unknown"))
+        return nil
+    }
+
+    /// Repo-relative paths of the files cached under `directory`, ignoring our
+    /// own staging area.
+    static func localRelativePaths(in directory: URL) -> [String] {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(atPath: directory.path) else { return [] }
+        var paths: [String] = []
+        for case let entry as String in enumerator {
+            if entry == stagingDirectoryName || entry.hasPrefix(stagingDirectoryName + "/") {
+                enumerator.skipDescendants()
+                continue
+            }
+            paths.append(entry)
+        }
+        return paths
     }
 
     /// Download an explicit file list with progress weighted by byte size.
     ///
-    /// `HubApi.snapshot()` reports useful progress for many repos, but for
-    /// large Xet-backed checkpoints it can advance by manifest/file count and
-    /// then remain quiet while multi-GB shards download. This path resolves
-    /// each file with `HEAD`, sums real `Content-Length` values, skips already
-    /// complete files, and reports progress from actual transferred bytes.
+    /// - Parameter expectedSizes: ignored. Sizes now come from the repository
+    ///   listing, which cannot go stale the way a hand-maintained table does.
+    ///   Kept so existing callers continue to compile.
     public static func downloadFilesByteWeighted(
         modelId: String,
         to directory: URL,
@@ -255,8 +331,8 @@ public enum HuggingFaceDownloader {
         }
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let safeFiles = try files.map(validatedRelativePath)
 
-        let safeFiles = try files.map(validatedRemoteFileName)
         if offlineMode {
             let missing = safeFiles.first {
                 !FileManager.default.fileExists(atPath: directory.appendingPathComponent($0).path)
@@ -269,20 +345,61 @@ public enum HuggingFaceDownloader {
             return
         }
 
+        do {
+            try await performDownload(
+                modelId: modelId,
+                directory: directory,
+                retryDelaysSeconds: retryDelaysSeconds,
+                progressHandler: progressHandler
+            ) {
+                let manifest = try await fetchManifest(modelId: modelId)
+                return try safeFiles.map { path in
+                    guard let file = manifest.file(at: path) else {
+                        throw DownloadError.failedToDownload(
+                            "\(modelId)/\(path): not present in repository")
+                    }
+                    return file
+                }
+            }
+        } catch let error as DownloadError {
+            let fm = FileManager.default
+            let allCached = safeFiles.allSatisfy {
+                fm.fileExists(atPath: directory.appendingPathComponent($0).path)
+            }
+            guard case .networkUnavailable = error, allCached else { throw error }
+            AudioLog.download.warning(
+                "\(modelId, privacy: .public): Hub unreachable, every requested file is already cached")
+            progressHandler?(1.0, 1, 1, "")
+            return
+        }
+    }
+
+    /// Shared retry ladder + stall guard around one resolve-then-transfer pass.
+    static func performDownload(
+        modelId: String,
+        directory: URL,
+        retryDelaysSeconds: [Int]?,
+        progressHandler: ((Double, Int64, Int64, String) -> Void)?,
+        resolve: @escaping @Sendable () async throws -> [RepoFile]
+    ) async throws {
         let delays = retryDelaysSeconds ?? downloadRetryDelaysSeconds
         let maxAttempts = delays.count + 1
         var lastError: Error?
+
         for attempt in 1...maxAttempts {
             do {
-                let remoteFiles = try await resolveRemoteFiles(
-                    modelId: modelId,
-                    files: safeFiles,
-                    expectedSizes: expectedSizes)
-                try await downloadResolvedFilesByteWeighted(
-                    remoteFiles,
-                    modelId: modelId,
-                    to: directory,
-                    progressHandler: progressHandler)
+                try await withDownloadStallGuardIfInProcess(modelId: modelId) { tick in
+                    let files = try await resolve()
+                    tick(0)
+                    try await downloadManifestFiles(
+                        files,
+                        modelId: modelId,
+                        to: directory
+                    ) { fraction, completed, total, name in
+                        tick(fraction)
+                        progressHandler?(fraction, completed, total, name)
+                    }
+                }
                 return
             } catch {
                 lastError = error
@@ -292,21 +409,97 @@ public enum HuggingFaceDownloader {
             }
         }
 
+        // Distinguish "we couldn't reach the Hub" from "the Hub said no". Only
+        // the former is safe to answer from cache: a 404 means the caller asked
+        // for something that isn't there, and silently loading whatever happens
+        // to be on disk would attribute the resulting failure to the wrong thing.
+        if let lastError, isLikelyNetworkFailure(lastError) {
+            throw DownloadError.networkUnavailable(
+                modelId: modelId, detail: lastError.localizedDescription)
+        }
         throw DownloadError.failedToDownload(
             "\(modelId) after \(maxAttempts) attempt\(maxAttempts == 1 ? "" : "s") "
                 + "(target: \(directory.path)): "
                 + (lastError?.localizedDescription ?? "unknown"))
     }
 
+    /// Whether `error` looks like the network being unreachable rather than the
+    /// server rejecting the request.
+    ///
+    /// A stall counts: bytes stopped flowing, which is a transport problem, not
+    /// a statement about the repository.
+    static func isLikelyNetworkFailure(_ error: Error) -> Bool {
+        if let downloadError = error as? DownloadError {
+            if case .stalled = downloadError { return true }
+            if case .networkUnavailable = downloadError { return true }
+            return false
+        }
+        guard let urlError = error as? URLError else { return false }
+        switch urlError.code {
+        case .notConnectedToInternet, .networkConnectionLost, .timedOut,
+             .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed,
+             .internationalRoamingOff, .dataNotAllowed, .secureConnectionFailed,
+             .resourceUnavailable:
+            return true
+        default:
+            return false
+        }
+    }
+
+    // MARK: - Background transfer
+
+    private static let backgroundTransferLock = NSLock()
+    nonisolated(unsafe) private static var storedBackgroundTransfer: BackgroundTransferConfiguration?
+
+    /// Transfer model files through a background `URLSession` that keeps
+    /// running while the process is suspended.
+    ///
+    /// `nil` — the default — keeps the in-process session every caller has
+    /// today. Set it once, before the first download, from a host that can be
+    /// suspended; see `BackgroundTransferConfiguration` for what it costs.
+    public static var backgroundTransfer: BackgroundTransferConfiguration? {
+        get {
+            backgroundTransferLock.lock()
+            defer { backgroundTransferLock.unlock() }
+            return storedBackgroundTransfer
+        }
+        set {
+            backgroundTransferLock.lock()
+            storedBackgroundTransfer = newValue
+            backgroundTransferLock.unlock()
+        }
+    }
+
+    /// Hand back the completion handler the system supplies when it relaunches
+    /// the process to deliver finished background transfers.
+    ///
+    /// The handler must be called, so an identifier this process knows nothing
+    /// about is answered immediately rather than dropped.
+    public static func handleBackgroundSessionEvents(
+        identifier: String,
+        completionHandler: @escaping @Sendable () -> Void
+    ) {
+        if let existing = BackgroundTransferCoordinator.existingCoordinator(for: identifier) {
+            existing.addSessionFinishedHandler(completionHandler)
+            return
+        }
+        guard let configuration = backgroundTransfer,
+              configuration.sessionIdentifier == identifier
+        else {
+            completionHandler()
+            return
+        }
+        BackgroundTransferCoordinator.coordinator(for: configuration)
+            .addSessionFinishedHandler(completionHandler)
+    }
+
     // MARK: - Retry ladder
 
     /// Delays between download attempts. One more attempt than entries:
-    /// 5 attempts with 5/15/30/60 s pauses (~110 s of backoff on top of the
-    /// per-attempt stall patience). Generous on purpose — abandoned attempts
-    /// restart files from byte 0 with the current Hub stack, so the cheap
-    /// resource here is wall-clock, not bytes. A network that's down for a
-    /// couple of minutes (AP roam, hotspot sleep, captive-portal re-auth)
-    /// should not kill a 2.75 GB first-run download.
+    /// 5 attempts with 5/15/30/60 s pauses. A network that's down for a couple
+    /// of minutes (AP roam, hotspot sleep, captive-portal re-auth) should not
+    /// kill a multi-GB first-run download. Retries are cheaper than they were:
+    /// a large file resumes from the last completed chunk rather than byte 0.
     static let downloadRetryDelaysSeconds = [5, 15, 30, 60]
 
     /// Total attempts per download (retries + the initial try).
@@ -314,20 +507,14 @@ public enum HuggingFaceDownloader {
 
     // MARK: - Download stall guard
 
-    /// Seconds of zero download progress after which an attempt is
-    /// considered wedged and aborted. `hub.snapshot` reports
-    /// `fractionCompleted` continuously while bytes flow, so a healthy
-    /// (even slow) transfer keeps resetting the clock; only a genuinely
-    /// stalled connection trips this.
+    /// Seconds of zero download progress after which an attempt is considered
+    /// wedged and aborted.
     ///
-    /// The default is tuned for end users, not CI: aborted attempts restart
-    /// each file from byte 0 (the Hub stack's mid-file resume never engages
-    /// on a fresh download), so firing the guard on a connection that would
-    /// have recovered throws away every byte of that attempt. Flaky networks
-    /// — AP roams, captive-portal re-auth, hotspot sleep — routinely stall
-    /// for 1–3 minutes and then recover, hence 300 s. CI pins
-    /// `HF_DOWNLOAD_STALL_TIMEOUT=90` to keep failing fast (app users can't
-    /// set env vars; CI can).
+    /// Progress is now reported per megabyte of real transferred bytes, so a
+    /// healthy transfer keeps resetting the clock however slow it is, and only
+    /// a genuinely stalled connection trips this. CI pins
+    /// `HF_DOWNLOAD_STALL_TIMEOUT=90` to fail fast; the default is tuned for
+    /// end users on flaky networks, who can't set environment variables.
     static var downloadStallTimeoutSeconds: Int {
         if let raw = ProcessInfo.processInfo.environment["HF_DOWNLOAD_STALL_TIMEOUT"],
            let v = Int(raw), v > 0 {
@@ -336,17 +523,47 @@ public enum HuggingFaceDownloader {
         return 300
     }
 
-    /// Concurrent range requests used by the byte-weighted downloader for
-    /// large files. Fish Audio and similar multi-GB checkpoints are hosted
-    /// behind HF/CDN endpoints where one stream can under-fill the user's
-    /// connection; bounded parallel ranges improve first-run download time
-    /// while still avoiding unbounded request fan-out.
+    /// Concurrent range requests used for large files. Bounded parallel ranges
+    /// improve first-run download time on connections one stream under-fills,
+    /// while avoiding unbounded request fan-out.
     static var downloadRangeConcurrency: Int {
         if let raw = ProcessInfo.processInfo.environment["HF_DOWNLOAD_RANGE_CONCURRENCY"],
            let v = Int(raw), v > 0 {
             return min(v, 16)
         }
         return 16
+    }
+
+    /// Size at or above which a file is fetched as concurrent ranges rather
+    /// than one request.
+    ///
+    /// Deliberately low. A single-request download reports nothing until it
+    /// finishes, so a file just under the threshold on a slow link produces no
+    /// progress at all and can trip the stall guard; and it cannot resume.
+    /// Chunking anything past a few megabytes means resume and progress are the
+    /// normal case rather than the large-file case. `HF_DOWNLOAD_RANGE_THRESHOLD`
+    /// overrides it, which is also how tests drive the chunked path cheaply.
+    static var rangedDownloadThresholdBytes: Int64 {
+        if let raw = ProcessInfo.processInfo.environment["HF_DOWNLOAD_RANGE_THRESHOLD"],
+           let v = Int64(raw), v > 0 {
+            return v
+        }
+        return 8 * 1_024 * 1_024
+    }
+
+    /// Bytes per range request.
+    ///
+    /// Each in-flight chunk is buffered whole, so this multiplied by
+    /// `downloadRangeConcurrency` is the transient memory a large download
+    /// costs — 128 MB at the defaults. It also sets how often progress is
+    /// reported and how much is re-fetched after an interruption.
+    /// `HF_DOWNLOAD_RANGE_CHUNK` overrides it.
+    static var rangedDownloadChunkBytes: Int64 {
+        if let raw = ProcessInfo.processInfo.environment["HF_DOWNLOAD_RANGE_CHUNK"],
+           let v = Int64(raw), v > 0 {
+            return v
+        }
+        return 8 * 1_024 * 1_024
     }
 
     /// Resolve the HuggingFace Hub endpoint, honoring the `HF_ENDPOINT`
@@ -359,12 +576,6 @@ public enum HuggingFaceDownloader {
     ///
     /// Returns `nil` (so `HubApi` keeps its default `https://huggingface.co`)
     /// when the variable is unset, blank, or not a valid `http(s)://host` URL.
-    /// The validation mirrors `HubApi`'s own guard so a malformed value falls
-    /// back to the default instead of breaking downloads.
-    ///
-    /// Public so modules that construct `HubApi` directly (e.g.
-    /// `FunctionGemma.loadFromHub`, which calls `snapshot(from:)` instead of
-    /// going through `downloadWeights`) can still honor the mirror.
     public static func resolvedEndpoint() -> String? {
         guard let raw = ProcessInfo.processInfo.environment["HF_ENDPOINT"]?
             .trimmingCharacters(in: .whitespacesAndNewlines),
@@ -376,8 +587,8 @@ public enum HuggingFaceDownloader {
         return raw
     }
 
-    /// Thread-safe last-progress timestamp. `hub.snapshot`'s progress
-    /// callback may fire from a background queue, so guard with a lock.
+    /// Thread-safe last-progress timestamp — progress may be reported from a
+    /// background task.
     private final class ProgressClock: @unchecked Sendable {
         private let lock = NSLock()
         private var last = Date()
@@ -388,32 +599,30 @@ public enum HuggingFaceDownloader {
         }
     }
 
-    /// Total bytes under `directory`, including in-flight partial files in
-    /// hidden subdirectories (HubApi writes `.incomplete` files under
-    /// `.cache/huggingface/download/`).
-    private static func directorySize(of directory: URL) -> Int64 {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: directory, includingPropertiesForKeys: [.fileSizeKey], options: [])
-        else { return 0 }
-        var total: Int64 = 0
-        for case let url as URL in enumerator {
-            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize {
-                total += Int64(size)
-            }
+    /// Apply the stall guard only when this process is the one transferring.
+    ///
+    /// The guard measures wall-clock time since the last reported byte, which
+    /// says nothing about a background session: its clock keeps running while
+    /// the process is suspended, so a transfer the system was performing
+    /// correctly the whole time would look wedged the moment the process came
+    /// back. A background transfer is bounded by the session's own resource
+    /// timeout instead, which the system enforces out of process.
+    static func withDownloadStallGuardIfInProcess(
+        modelId: String,
+        _ operation: @escaping (@escaping @Sendable (Double) -> Void) async throws -> Void
+    ) async throws {
+        guard backgroundTransfer == nil else {
+            try await operation { _ in }
+            return
         }
-        return total
+        try await withDownloadStallGuard(modelId: modelId, operation)
     }
 
-    /// Run a download `operation` that reports fractional progress, and
-    /// abort it if progress stalls for `downloadStallTimeoutSeconds`.
-    /// On stall the in-flight `hub.snapshot` task is cancelled (URLSession
-    /// honors cancellation) and `DownloadError.stalled` is thrown so the
-    /// caller's retry loop fires instead of hanging indefinitely.
+    /// Run a download `operation` that reports progress, and abort it if
+    /// progress stalls for `downloadStallTimeoutSeconds`.
     static func withDownloadStallGuard(
         modelId: String,
         stallTimeoutSeconds: Int? = nil,
-        watchDirectory: URL? = nil,
         _ operation: @escaping (@escaping @Sendable (Double) -> Void) async throws -> Void
     ) async throws {
         let stall = stallTimeoutSeconds ?? downloadStallTimeoutSeconds
@@ -424,28 +633,11 @@ public enum HuggingFaceDownloader {
                 try await operation { _ in clock.tick() }
             }
             group.addTask {
-                // Poll on a fraction of the window so we detect a stall
+                // Poll on a fraction of the window so a stall is detected
                 // within ~stall..stall+pollStep seconds.
-                //
-                // `hub.snapshot` only fires its progress callback at file
-                // completion, so a single shard that takes longer than the
-                // stall window to transfer produces zero callbacks and a
-                // healthy download would be killed (a 4.3 GB shard at
-                // ~10 MB/s needs ~430 s against a 300 s window — VoxCPM2
-                // bf16 could never finish). Bytes appearing on disk are
-                // download progress, so also tick whenever the destination
-                // directory grows.
                 let pollStep = max(1, stall / 3)
-                var lastSize = watchDirectory.map(Self.directorySize(of:)) ?? 0
                 while true {
                     try await Task.sleep(for: .seconds(pollStep))
-                    if let dir = watchDirectory {
-                        let size = Self.directorySize(of: dir)
-                        if size != lastSize {
-                            lastSize = size
-                            clock.tick()
-                        }
-                    }
                     if clock.idleSeconds() >= Double(stall) {
                         throw DownloadError.stalled(modelId: modelId, seconds: stall)
                     }
@@ -458,7 +650,7 @@ public enum HuggingFaceDownloader {
         }
     }
 
-    // MARK: - Security Helpers (kept for backward compat + security tests)
+    // MARK: - Security Helpers
 
     /// Convert an arbitrary modelId into a single, safe path component for on-disk caching.
     public static func sanitizedCacheKey(for modelId: String) -> String {
@@ -481,7 +673,7 @@ public enum HuggingFaceDownloader {
         return cleaned
     }
 
-    /// Validate that a remote file name is safe.
+    /// Validate that a remote file name is a safe single path component.
     public static func validatedRemoteFileName(_ file: String) throws -> String {
         let base = URL(fileURLWithPath: file).lastPathComponent
         guard base == file else {
@@ -496,14 +688,47 @@ public enum HuggingFaceDownloader {
         return base
     }
 
+    /// Validate a repo-relative path that may name a file inside a directory.
+    ///
+    /// CoreML bundles are directories (`AudioEncoder.mlmodelc/coremldata.bin`),
+    /// so the download path has to accept nested paths — the previous
+    /// single-component rule is exactly why the ranged downloader could not
+    /// serve CoreML repositories. Traversal is still refused: no absolute
+    /// paths, no empty components, and no `.` or `..` anywhere.
+    public static func validatedRelativePath(_ path: String) throws -> String {
+        guard !path.isEmpty, !path.hasPrefix("/") else {
+            throw DownloadError.invalidRemoteFileName(path)
+        }
+        let components = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !components.isEmpty else {
+            throw DownloadError.invalidRemoteFileName(path)
+        }
+        for component in components {
+            guard !component.isEmpty, component != ".", component != ".." else {
+                throw DownloadError.invalidRemoteFileName(path)
+            }
+            guard component.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else {
+                throw DownloadError.invalidRemoteFileName(path)
+            }
+        }
+        return components.joined(separator: "/")
+    }
+
     /// Validate that a local path stays within the expected directory.
     public static func validatedLocalPath(directory: URL, fileName: String) throws -> URL {
-        let local = directory.appendingPathComponent(fileName, isDirectory: false)
+        try validatedLocalPath(directory: directory, relativePath: fileName)
+    }
+
+    /// Resolve a repo-relative path under `directory`, refusing anything that
+    /// escapes it. Belt and braces on top of `validatedRelativePath`.
+    public static func validatedLocalPath(directory: URL, relativePath: String) throws -> URL {
+        let safe = try validatedRelativePath(relativePath)
+        let local = directory.appendingPathComponent(safe, isDirectory: false)
         let dirPath = directory.standardizedFileURL.path
         let localPath = local.standardizedFileURL.path
         let prefix = dirPath.hasSuffix("/") ? dirPath : (dirPath + "/")
         guard localPath.hasPrefix(prefix) else {
-            throw DownloadError.invalidRemoteFileName(fileName)
+            throw DownloadError.invalidRemoteFileName(relativePath)
         }
         return local
     }
@@ -525,543 +750,5 @@ public enum HuggingFaceDownloader {
             root = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
         }
         return root.appendingPathComponent(cacheDirName, isDirectory: true)
-    }
-
-    /// Create a `HubApi` whose `downloadBase` is derived from the repo directory that
-    /// `getCacheDirectory` returned (strips the `models/<org>/<model>` suffix).
-    ///
-    /// `offlineMode` is forwarded as `useOfflineMode` so callers get the mode
-    /// they asked for instead of relying on `NWPathMonitor` auto-detection,
-    /// which can spuriously report `.unsatisfied` on macOS.
-    private static func makeHubApi(for modelId: String, repoDir: URL, offlineMode: Bool) -> HubApi {
-        // repoDir is  base/models/org/model
-        // We need     base
-        let repo = Hub.Repo(id: modelId)
-        let suffix = "/\(repo.type.rawValue)/\(repo.id)"
-        let repoDirPath = repoDir.path
-        let downloadBase: URL
-        if repoDirPath.hasSuffix(suffix) {
-            let basePath = String(repoDirPath.dropLast(suffix.count))
-            downloadBase = URL(fileURLWithPath: basePath, isDirectory: true)
-        } else {
-            // Fallback: old-style flat dir — use its parent as downloadBase.
-            // Hub won't match this path, so we derive base from env/defaults.
-            downloadBase = resolveBaseCacheDir(cacheDirName: repoDir.deletingLastPathComponent().lastPathComponent)
-        }
-        return HubApi(downloadBase: downloadBase, endpoint: resolvedEndpoint(), useOfflineMode: offlineMode)
-    }
-}
-
-// MARK: - Byte-weighted explicit downloads
-
-private struct ResolvedRemoteFile: Sendable {
-    let fileName: String
-    let url: URL
-    let size: Int64
-}
-
-private extension HuggingFaceDownloader {
-    static let rangedDownloadThresholdBytes: Int64 = 64 * 1_024 * 1_024
-    static let rangedDownloadChunkBytes: Int64 = 16 * 1_024 * 1_024
-
-    static func resolveRemoteFiles(
-        modelId: String,
-        files: [String],
-        expectedSizes: [String: Int64]?
-    ) async throws -> [ResolvedRemoteFile] {
-        if let expectedSizes {
-            return try files.map { file in
-                guard let size = expectedSizes[file], size > 0 else {
-                    throw DownloadError.failedToDownload("\(modelId)/\(file): missing expected size")
-                }
-                return ResolvedRemoteFile(
-                    fileName: file,
-                    url: try resolveURL(modelId: modelId, file: file),
-                    size: size)
-            }
-        }
-
-        var result: [ResolvedRemoteFile] = []
-        result.reserveCapacity(files.count)
-        for file in files {
-            result.append(try await resolveRemoteFile(modelId: modelId, file: file))
-        }
-        return result
-    }
-
-    static func resolveRemoteFile(modelId: String, file: String) async throws -> ResolvedRemoteFile {
-        let url = try resolveURL(modelId: modelId, file: file)
-        var request = URLRequest(url: url)
-        request.httpMethod = "HEAD"
-        applyHubAuth(to: &request)
-        let (_, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw DownloadError.failedToDownload("\(modelId)/\(file): missing HTTP response")
-        }
-        guard (200..<300).contains(http.statusCode) else {
-            throw DownloadError.failedToDownload("\(modelId)/\(file): HTTP \(http.statusCode)")
-        }
-        guard let resolved = http.url else {
-            throw DownloadError.failedToDownload("\(modelId)/\(file): missing resolved URL")
-        }
-        let size = headerInt64(http, "Content-Length")
-            ?? headerInt64(http, "x-linked-size")
-            ?? http.expectedContentLength
-        guard size > 0 else {
-            throw DownloadError.failedToDownload("\(modelId)/\(file): unknown remote size")
-        }
-        return ResolvedRemoteFile(fileName: file, url: resolved, size: size)
-    }
-
-    static func downloadResolvedFilesByteWeighted(
-        _ files: [ResolvedRemoteFile],
-        modelId: String,
-        to directory: URL,
-        progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    ) async throws {
-        let totalBytes = files.reduce(Int64(0)) { $0 + $1.size }
-        var completedBytes: Int64 = 0
-
-        for file in files {
-            let localURL = directory.appendingPathComponent(file.fileName, isDirectory: false)
-            let currentSize = localFileSize(localURL)
-            if currentSize == file.size {
-                completedBytes += file.size
-                reportByteProgress(
-                    completedBytes: completedBytes,
-                    totalBytes: totalBytes,
-                    fileName: file.fileName,
-                    progressHandler: progressHandler)
-                continue
-            }
-            if currentSize > 0 {
-                try? FileManager.default.removeItem(at: localURL)
-            }
-
-            reportByteProgress(
-                completedBytes: completedBytes,
-                totalBytes: totalBytes,
-                fileName: file.fileName,
-                progressHandler: progressHandler)
-            if file.size >= rangedDownloadThresholdBytes {
-                try await downloadRangedResolvedFile(
-                    file,
-                    to: localURL,
-                    completedBeforeFile: completedBytes,
-                    totalBytes: totalBytes,
-                    progressHandler: progressHandler)
-            } else {
-                try await downloadSingleResolvedFile(
-                    file,
-                    to: localURL,
-                    completedBeforeFile: completedBytes,
-                    totalBytes: totalBytes,
-                    progressHandler: progressHandler)
-            }
-            completedBytes += file.size
-            reportByteProgress(
-                completedBytes: completedBytes,
-                totalBytes: totalBytes,
-                fileName: file.fileName,
-                progressHandler: progressHandler)
-
-            let writtenSize = localFileSize(localURL)
-            guard writtenSize == file.size else {
-                throw DownloadError.failedToDownload(
-                    "\(modelId)/\(file.fileName): wrote \(writtenSize) bytes, expected \(file.size)")
-            }
-        }
-    }
-
-    static func downloadSingleResolvedFile(
-        _ file: ResolvedRemoteFile,
-        to destination: URL,
-        completedBeforeFile: Int64,
-        totalBytes: Int64,
-        progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    ) async throws {
-        var request = URLRequest(url: file.url)
-        applyHubAuth(to: &request)
-        let tempURL = destination
-            .deletingLastPathComponent()
-            .appendingPathComponent(".\(destination.lastPathComponent).download")
-        try? FileManager.default.removeItem(at: tempURL)
-
-        let delegate = ByteWeightedDownloadDelegate(
-            destination: tempURL,
-            expectedSize: file.size,
-            completedBeforeFile: completedBeforeFile,
-            totalBytes: totalBytes,
-            fileName: file.fileName,
-            progressHandler: progressHandler)
-        let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
-        defer {
-            session.invalidateAndCancel()
-            try? FileManager.default.removeItem(at: tempURL)
-        }
-
-        try await withTaskCancellationHandler {
-            try await delegate.download(request: request, session: session)
-        } onCancel: {
-            session.invalidateAndCancel()
-        }
-
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: tempURL, to: destination)
-    }
-
-    static func downloadRangedResolvedFile(
-        _ file: ResolvedRemoteFile,
-        to destination: URL,
-        completedBeforeFile: Int64,
-        totalBytes: Int64,
-        progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    ) async throws {
-        let partsDirectory = destination
-            .deletingLastPathComponent()
-            .appendingPathComponent(".\(destination.lastPathComponent).parts", isDirectory: true)
-        try FileManager.default.createDirectory(at: partsDirectory, withIntermediateDirectories: true)
-
-        let chunks = makeDownloadChunks(fileSize: file.size, chunkBytes: rangedDownloadChunkBytes)
-        let state = RangedDownloadProgress(
-            completedBeforeFile: completedBeforeFile,
-            totalBytes: totalBytes,
-            fileName: file.fileName,
-            progressHandler: progressHandler)
-        let concurrency = downloadRangeConcurrency
-        let configuration = URLSessionConfiguration.default
-        configuration.httpMaximumConnectionsPerHost = max(concurrency, 1)
-        let session = URLSession(configuration: configuration)
-        defer { session.invalidateAndCancel() }
-
-        var missingChunks: [DownloadChunk] = []
-        missingChunks.reserveCapacity(chunks.count)
-        for chunk in chunks {
-            let partURL = partFileURL(partsDirectory: partsDirectory, chunk: chunk)
-            let partSize = localFileSize(partURL)
-            if partSize == chunk.length {
-                await state.addCompletedBytes(chunk.length)
-                continue
-            }
-            if partSize > 0 {
-                try? FileManager.default.removeItem(at: partURL)
-            }
-            missingChunks.append(chunk)
-        }
-
-        if !missingChunks.isEmpty {
-            try await withThrowingTaskGroup(of: Void.self) { group in
-                var nextIndex = 0
-                let initial = min(concurrency, missingChunks.count)
-                for _ in 0..<initial {
-                    let chunk = missingChunks[nextIndex]
-                    nextIndex += 1
-                    group.addTask {
-                        try await downloadRangeChunk(
-                            file,
-                            chunk: chunk,
-                            to: partFileURL(partsDirectory: partsDirectory, chunk: chunk),
-                            state: state,
-                            session: session)
-                    }
-                }
-
-                while try await group.next() != nil {
-                    if nextIndex < missingChunks.count {
-                        let chunk = missingChunks[nextIndex]
-                        nextIndex += 1
-                        group.addTask {
-                            try await downloadRangeChunk(
-                                file,
-                                chunk: chunk,
-                                to: partFileURL(partsDirectory: partsDirectory, chunk: chunk),
-                                state: state,
-                                session: session)
-                        }
-                    }
-                }
-            }
-        }
-
-        let tempURL = destination
-            .deletingLastPathComponent()
-            .appendingPathComponent(".\(destination.lastPathComponent).download")
-        try? FileManager.default.removeItem(at: tempURL)
-        FileManager.default.createFile(atPath: tempURL.path, contents: nil)
-        let output = try FileHandle(forWritingTo: tempURL)
-        defer { try? output.close() }
-
-        for chunk in chunks {
-            let partURL = partFileURL(partsDirectory: partsDirectory, chunk: chunk)
-            let data = try Data(contentsOf: partURL)
-            guard Int64(data.count) == chunk.length else {
-                throw DownloadError.failedToDownload(
-                    "\(file.fileName): part \(chunk.index) has \(data.count) bytes, expected \(chunk.length)")
-            }
-            try output.write(contentsOf: data)
-        }
-
-        try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: tempURL, to: destination)
-        try? FileManager.default.removeItem(at: partsDirectory)
-    }
-
-    static func downloadRangeChunk(
-        _ file: ResolvedRemoteFile,
-        chunk: DownloadChunk,
-        to destination: URL,
-        state: RangedDownloadProgress,
-        session: URLSession
-    ) async throws {
-        var request = URLRequest(url: file.url)
-        request.setValue("bytes=\(chunk.start)-\(chunk.end)", forHTTPHeaderField: "Range")
-        applyHubAuth(to: &request)
-
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw DownloadError.failedToDownload("\(file.fileName) part \(chunk.index): missing HTTP response")
-        }
-        guard http.statusCode == 206 else {
-            throw DownloadError.failedToDownload(
-                "\(file.fileName) part \(chunk.index): expected HTTP 206, got \(http.statusCode)")
-        }
-        guard Int64(data.count) == chunk.length else {
-            throw DownloadError.failedToDownload(
-                "\(file.fileName) part \(chunk.index): got \(data.count) bytes, expected \(chunk.length)")
-        }
-        try data.write(to: destination, options: .atomic)
-        await state.addCompletedBytes(chunk.length)
-    }
-
-    static func makeDownloadChunks(fileSize: Int64, chunkBytes: Int64) -> [DownloadChunk] {
-        guard fileSize > 0 else { return [] }
-        var chunks: [DownloadChunk] = []
-        var start: Int64 = 0
-        var index = 0
-        while start < fileSize {
-            let end = min(fileSize - 1, start + chunkBytes - 1)
-            chunks.append(DownloadChunk(index: index, start: start, end: end))
-            start = end + 1
-            index += 1
-        }
-        return chunks
-    }
-
-    static func partFileURL(partsDirectory: URL, chunk: DownloadChunk) -> URL {
-        partsDirectory.appendingPathComponent(String(format: "%06d.part", chunk.index))
-    }
-
-    static func reportByteProgress(
-        completedBytes: Int64,
-        totalBytes: Int64,
-        fileName: String,
-        progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    ) {
-        guard totalBytes > 0 else {
-            progressHandler?(1.0, completedBytes, totalBytes, fileName)
-            return
-        }
-        let clamped = min(max(completedBytes, 0), totalBytes)
-        progressHandler?(Double(clamped) / Double(totalBytes), clamped, totalBytes, fileName)
-    }
-
-    static func resolveURL(modelId: String, file: String) throws -> URL {
-        let endpoint = (resolvedEndpoint() ?? "https://huggingface.co")
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let escapedFile = file.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? file
-        guard let url = URL(string: "\(endpoint)/\(modelId)/resolve/main/\(escapedFile)") else {
-            throw DownloadError.failedToDownload("\(modelId)/\(file): invalid URL")
-        }
-        return url
-    }
-
-    static func applyHubAuth(to request: inout URLRequest) {
-        let env = ProcessInfo.processInfo.environment
-        let token = env["HF_TOKEN"] ?? env["HUGGING_FACE_HUB_TOKEN"]
-        if let token, !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-    }
-
-    static func headerInt64(_ response: HTTPURLResponse, _ key: String) -> Int64? {
-        for (rawKey, rawValue) in response.allHeaderFields {
-            guard String(describing: rawKey).caseInsensitiveCompare(key) == .orderedSame else {
-                continue
-            }
-            if let value = rawValue as? NSNumber {
-                return value.int64Value
-            }
-            return Int64(String(describing: rawValue))
-        }
-        return nil
-    }
-
-    static func localFileSize(_ url: URL) -> Int64 {
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = attrs[.size] as? NSNumber else {
-            return 0
-        }
-        return size.int64Value
-    }
-}
-
-private struct DownloadChunk: Sendable {
-    let index: Int
-    let start: Int64
-    let end: Int64
-
-    var length: Int64 {
-        end - start + 1
-    }
-}
-
-private actor RangedDownloadProgress {
-    private let completedBeforeFile: Int64
-    private let totalBytes: Int64
-    private let fileName: String
-    private let progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    private var fileCompletedBytes: Int64 = 0
-    private var lastReportedMegabytes: Int64 = -1
-
-    init(
-        completedBeforeFile: Int64,
-        totalBytes: Int64,
-        fileName: String,
-        progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    ) {
-        self.completedBeforeFile = completedBeforeFile
-        self.totalBytes = totalBytes
-        self.fileName = fileName
-        self.progressHandler = progressHandler
-    }
-
-    func addCompletedBytes(_ bytes: Int64) {
-        fileCompletedBytes += bytes
-        let completed = completedBeforeFile + fileCompletedBytes
-        let displayedMegabytes = Int64((Double(completed) / 1_000_000.0).rounded())
-        if completed < totalBytes, displayedMegabytes == lastReportedMegabytes {
-            return
-        }
-        lastReportedMegabytes = displayedMegabytes
-        HuggingFaceDownloader.reportByteProgress(
-            completedBytes: completed,
-            totalBytes: totalBytes,
-            fileName: fileName,
-            progressHandler: progressHandler)
-    }
-}
-
-private final class ByteWeightedDownloadDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let lock = NSLock()
-    private let destination: URL
-    private let expectedSize: Int64
-    private let completedBeforeFile: Int64
-    private let totalBytes: Int64
-    private let fileName: String
-    private let progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    private var continuation: CheckedContinuation<Void, Error>?
-    private var completed = false
-    private var lastReportedMegabytes: Int64 = -1
-
-    init(
-        destination: URL,
-        expectedSize: Int64,
-        completedBeforeFile: Int64,
-        totalBytes: Int64,
-        fileName: String,
-        progressHandler: ((Double, Int64, Int64, String) -> Void)?
-    ) {
-        self.destination = destination
-        self.expectedSize = expectedSize
-        self.completedBeforeFile = completedBeforeFile
-        self.totalBytes = totalBytes
-        self.fileName = fileName
-        self.progressHandler = progressHandler
-    }
-
-    func download(request: URLRequest, session: URLSession) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            lock.lock()
-            self.continuation = continuation
-            lock.unlock()
-            session.downloadTask(with: request).resume()
-        }
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didWriteData bytesWritten: Int64,
-        totalBytesWritten: Int64,
-        totalBytesExpectedToWrite: Int64
-    ) {
-        let fileBytes = totalBytesWritten >= 0 ? totalBytesWritten : 0
-        let completed = completedBeforeFile + min(fileBytes, expectedSize)
-        let displayedMegabytes = Int64((Double(completed) / 1_000_000.0).rounded())
-        lock.lock()
-        if completed < totalBytes, displayedMegabytes == lastReportedMegabytes {
-            lock.unlock()
-            return
-        }
-        lastReportedMegabytes = displayedMegabytes
-        lock.unlock()
-        HuggingFaceDownloader.reportByteProgress(
-            completedBytes: completed,
-            totalBytes: totalBytes,
-            fileName: fileName,
-            progressHandler: progressHandler)
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        downloadTask: URLSessionDownloadTask,
-        didFinishDownloadingTo location: URL
-    ) {
-        if let http = downloadTask.response as? HTTPURLResponse,
-           !(200..<300).contains(http.statusCode) {
-            complete(.failure(DownloadError.failedToDownload("\(fileName): HTTP \(http.statusCode)")))
-            return
-        }
-        do {
-            try? FileManager.default.removeItem(at: destination)
-            try FileManager.default.moveItem(at: location, to: destination)
-            let writtenSize = HuggingFaceDownloader.localFileSize(destination)
-            guard writtenSize == expectedSize else {
-                throw DownloadError.failedToDownload(
-                    "\(fileName): wrote \(writtenSize) bytes, expected \(expectedSize)")
-            }
-            complete(.success(()))
-        } catch {
-            complete(.failure(error))
-        }
-    }
-
-    func urlSession(
-        _ session: URLSession,
-        task: URLSessionTask,
-        didCompleteWithError error: Error?
-    ) {
-        if let error {
-            complete(.failure(error))
-        }
-    }
-
-    private func complete(_ result: Result<Void, Error>) {
-        lock.lock()
-        guard !completed else {
-            lock.unlock()
-            return
-        }
-        completed = true
-        let continuation = self.continuation
-        self.continuation = nil
-        lock.unlock()
-
-        switch result {
-        case .success:
-            continuation?.resume()
-        case .failure(let error):
-            continuation?.resume(throwing: error)
-        }
     }
 }

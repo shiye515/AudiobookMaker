@@ -3,7 +3,7 @@ import AVFoundation
 
 /// Sample-rate-conversion quality. Both options fully drain the converter and
 /// produce exact-length output; they differ only in the SRC filter.
-public enum ResampleQuality {
+public enum ResampleQuality: Sendable, Equatable {
     /// Framework-default band-limited SRC (`Normal` algorithm). Anti-aliases
     /// steep downsamples and retains high frequencies well below Nyquist;
     /// rolls off slightly more near Nyquist than `.mastering`. The right
@@ -22,32 +22,65 @@ public enum ResampleQuality {
 public enum AudioFileLoader {
     /// Load audio file and return samples at target sample rate.
     /// `quality` selects the SRC filter when resampling (default `.standard`;
-    /// pass `.mastering` for music/upsampling).
-    public static func load(url: URL, targetSampleRate: Int = 24000, quality: ResampleQuality = .standard) throws -> [Float] {
+    /// pass `.mastering` for music/upsampling). Multichannel input is averaged
+    /// by default; pass `.first` or `.select([indices])` for explicit routing.
+    public static func load(
+        url: URL,
+        targetSampleRate: Int = 24000,
+        quality: ResampleQuality = .standard,
+        channelSelection: AudioChannelSelection = .mixAll
+    ) throws -> [Float] {
         let audioFile = try AVAudioFile(forReading: url)
         let format = audioFile.processingFormat
         let frameCount = AVAudioFrameCount(audioFile.length)
-
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else {
+        guard let buffer = AVAudioPCMBuffer(
+            pcmFormat: format,
+            frameCapacity: frameCount) else {
             throw AudioLoadError.bufferCreationFailed
         }
-
         try audioFile.read(into: buffer)
-
-        guard let floatData = buffer.floatChannelData else {
+        guard let channels = buffer.floatChannelData else {
             throw AudioLoadError.noFloatData
         }
 
-        // Get mono samples (use first channel)
-        let samples = Array(UnsafeBufferPointer(start: floatData[0], count: Int(buffer.frameLength)))
-
-        // Resample if needed
-        let inputSampleRate = Int(format.sampleRate)
-        if inputSampleRate != targetSampleRate {
-            return resample(samples, from: inputSampleRate, to: targetSampleRate, quality: quality)
+        let selectedChannels = try AudioFileChunkReader.resolveChannels(
+            channelSelection,
+            available: Int(format.channelCount))
+        let count = Int(buffer.frameLength)
+        let samples: [Float]
+        if selectedChannels.count == 1 {
+            samples = Array(UnsafeBufferPointer(
+                start: channels[selectedChannels[0]],
+                count: count))
+        } else {
+            let scale = 1 / Float(selectedChannels.count)
+            var mixed = [Float](repeating: 0, count: count)
+            for channelIndex in selectedChannels {
+                let source = channels[channelIndex]
+                for frame in 0..<count {
+                    mixed[frame] += source[frame] * scale
+                }
+            }
+            samples = mixed
         }
 
+        let inputSampleRate = Int(format.sampleRate)
+        if inputSampleRate != targetSampleRate {
+            return resample(
+                samples,
+                from: inputSampleRate,
+                to: targetSampleRate,
+                quality: quality)
+        }
         return samples
+    }
+
+    /// Decode a file incrementally with pull-based backpressure.
+    public static func stream(
+        url: URL,
+        options: AudioFileStreamOptions = .init()
+    ) -> AudioFileStream {
+        AudioFileStream(url: url, options: options)
     }
 
     /// Load audio file and return stereo channels at target sample rate.
@@ -88,8 +121,12 @@ public enum AudioFileLoader {
         return [left, right]
     }
 
-    /// Load WAV file directly (for 16-bit PCM)
-    public static func loadWAV(url: URL) throws -> (samples: [Float], sampleRate: Int) {
+    /// Load WAV file directly (for 16-bit PCM). Multichannel input is averaged
+    /// by default; pass `.first` or `.select([indices])` for explicit routing.
+    public static func loadWAV(
+        url: URL,
+        channelSelection: AudioChannelSelection = .mixAll
+    ) throws -> (samples: [Float], sampleRate: Int) {
         let data = try Data(contentsOf: url)
 
         // Parse WAV header
@@ -163,14 +200,33 @@ public enum AudioFileLoader {
         let frameSize = bytesPerSample * channels
         let sampleCount = sampleData.count / frameSize
 
+        let selectedChannels: [Int]
+        switch channelSelection {
+        case .mixAll:
+            selectedChannels = Array(0..<channels)
+        case .first:
+            selectedChannels = [0]
+        case .select(let selected):
+            var seen = Set<Int>()
+            let unique = selected.filter { seen.insert($0).inserted }
+            guard !unique.isEmpty,
+                  unique.allSatisfy({ $0 >= 0 && $0 < channels }) else {
+                throw AudioLoadError.invalidChannelSelection(
+                    requested: selected, availableChannelCount: channels)
+            }
+            selectedChannels = unique
+        }
+
         var samples = [Float](repeating: 0, count: sampleCount)
         sampleData.withUnsafeBytes { ptr in
             let int16Ptr = ptr.bindMemory(to: Int16.self)
+            let scale = 1 / Float(selectedChannels.count)
             for i in 0..<sampleCount {
-                // Take first channel only
-                let sampleIndex = i * channels
-                if sampleIndex < int16Ptr.count {
-                    samples[i] = Float(int16Ptr[sampleIndex]) / 32768.0
+                for channel in selectedChannels {
+                    let sampleIndex = i * channels + channel
+                    if sampleIndex < int16Ptr.count {
+                        samples[i] += Float(int16Ptr[sampleIndex]) / 32768.0 * scale
+                    }
                 }
             }
         }
@@ -366,6 +422,9 @@ public enum AudioLoadError: Error, LocalizedError {
     case noFloatData
     case invalidWAVFile
     case unsupportedFormat(String)
+    case invalidChannelSelection(requested: [Int], availableChannelCount: Int)
+    case invalidStreamConfiguration(String)
+    case conversionFailed(String)
 
     public var errorDescription: String? {
         switch self {
@@ -377,6 +436,12 @@ public enum AudioLoadError: Error, LocalizedError {
             return "Invalid WAV file format"
         case .unsupportedFormat(let reason):
             return "Unsupported audio format: \(reason)"
+        case .invalidChannelSelection(let requested, let available):
+            return "Invalid audio channel selection \(requested); file has \(available) channel(s)"
+        case .invalidStreamConfiguration(let reason):
+            return "Invalid audio stream configuration: \(reason)"
+        case .conversionFailed(let reason):
+            return "Audio conversion failed: \(reason)"
         }
     }
 }

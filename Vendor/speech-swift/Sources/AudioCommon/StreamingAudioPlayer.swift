@@ -92,7 +92,7 @@ public final class AudioSampleRingBuffer: @unchecked Sendable {
 /// - Lower = less latency, but risk of underflow gaps
 ///
 /// Typical values:
-/// - 0s: single-pass TTS where all audio arrives at once
+/// - 0s: single-pass TTS (Kokoro) where all audio arrives at once
 /// - 2s: streaming TTS (Qwen3-TTS, RTF ~0.53)
 public final class StreamingAudioPlayer: @unchecked Sendable {
     private var engine: AVAudioEngine?

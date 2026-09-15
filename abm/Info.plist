@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 与 GENERATE_INFOPLIST_FILE 的生成内容合并；图标文件为 Resources/AppIcon.icns -->
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+</dict>
+</plist>

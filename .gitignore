@@ -1,54 +1,64 @@
-# macOS
+# ---------- macOS ----------
 .DS_Store
 .AppleDouble
 .LSOverride
+._*
 
-# Xcode user-specific state
+# ---------- Xcode ----------
+## 用户级状态（窗口布局、断点、界面状态）
 xcuserdata/
 *.xcuserstate
-*.xccheckout
 *.xcscmblueprint
 
-# Xcode and Swift build products
+## 构建产物
 DerivedData/
 build/
-.build/
-*.app
-*.dSYM
+Build/
+*.ipa
 *.dSYM.zip
-*.xcarchive
+*.dSYM
 
-# Test and profiling artifacts
-*.xcresult
-*.trace
-*.profdata
-*.gcda
-*.gcno
+## Xcode 26 Debug 构建的真实代码在 abm.debug.dylib，随构建生成，不入库
+# （它位于 abm.app 内，已被上方 build 产物规则覆盖；此处无额外条目）
 
-# Swift Package Manager local state
-.swiftpm/xcode/package.xcworkspace/xcuserdata/
-.swiftpm/configuration/registries.json
-.swiftpm/security/
-
-# Playgrounds
+## Playgrounds
 timeline.xctimeline
 playground.xcworkspace
 
-# Editors and temporary files
-*.swp
-*.swo
-*~
-.vscode/
-.idea/
+# ---------- Swift Package Manager ----------
+.build/
+.swiftpm/
+# Xcode 工程的依赖解析锁（SPM 依赖版本 + speech-swift 锁定 commit）必须入库
+# abm.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved  ← 保留，勿忽略
 
-# Local environment and signing credentials
-.env
-.env.*
-!.env.example
-*.p12
-*.cer
-*.provisionprofile
+# ---------- CocoaPods（当前未用，预防性）----------
+Pods/
 
-# Local logs and crash reports
-*.log
-*.crash
+# ---------- 模型权重：体积大（~2.1GB），不入库；本地已下载到 docs/models/ ----------
+# 使用时把 fromPretrained(cacheDir:) 指向这两个目录即可
+docs/models/
+
+# 下载未完成的临时文件
+*.part
+
+# ---------- 应用运行时输出（合成音频 / 日志在 ~/Library/Application Support/abm/，不在仓库内）----------
+*.wav
+abm_spike_*.log
+.cache
+.module-cache
+
+# 内置 ffmpeg 产物（scripts/build-ffmpeg.sh 生成）
+abm/Tools/ffmpeg
+abm/Tools/ffmpeg-LICENSE
+build/
+
+# EPUB 解析夹具（scripts/make_epub_fixtures.py 生成）
+scripts/fixtures/
+
+# 本地导出配置（复制 ExportOptions.plist.example 后填写）
+ExportOptions.plist
+abm.zip
+
+# 本地截图原稿（精修后的 docs/screenshots/*.png 可提交）
+docs/screenshots/*.mov
+docs/screenshots/*.heic

@@ -1,0 +1,229 @@
+import Accelerate
+import CoreML
+import Foundation
+
+/// Reusable MLFeatureProvider that avoids dictionary allocation on every CoreML prediction.
+/// Backing MLMultiArray references can be updated via `update(_:_:)` when the underlying
+/// array changes (e.g. new decoder hidden state after a non-blank token).
+private class ReusableFeatureProvider: MLFeatureProvider {
+    let featureNames: Set<String>
+    private var values: [String: MLFeatureValue]
+
+    init(_ dict: [String: MLMultiArray]) {
+        self.featureNames = Set(dict.keys)
+        self.values = dict.mapValues { MLFeatureValue(multiArray: $0) }
+    }
+
+    func featureValue(for name: String) -> MLFeatureValue? { values[name] }
+
+    func update(_ name: String, _ array: MLMultiArray) {
+        values[name] = MLFeatureValue(multiArray: array)
+    }
+}
+
+/// Greedy decoder for Token-and-Duration Transducer (TDT) models.
+///
+/// TDT extends standard transducers with a duration prediction head.
+/// When a non-blank token is emitted, the duration head predicts how many
+/// encoder frames to advance (from `durationBins`), enabling variable-rate
+/// alignment between audio and text.
+///
+/// Standard greedy decoding: starts with blank token to initialize the LSTM,
+/// then runs the encoder-joint-decoder loop. The v3 multilingual model handles
+/// all 25 European languages natively (EncDecRNNTBPEModel, no prompt tokens).
+struct TDTGreedyDecoder {
+    let config: ParakeetConfig
+    let decoder: MLModel
+    let joint: MLModel
+    /// Vocabulary-owned classification of transcript text versus model-control tokens.
+    let vocabulary: ParakeetVocabulary
+    /// Language-tag token IDs to suppress during argmax, so the decoder can only emit an allowed
+    /// language and the transcription follows it. Empty = no steering (native auto-detect).
+    let maskedTokenIds: Set<Int>
+
+    init(
+        config: ParakeetConfig,
+        decoder: MLModel,
+        joint: MLModel,
+        vocabulary: ParakeetVocabulary,
+        maskedTokenIds: Set<Int> = []
+    ) {
+        self.config = config
+        self.decoder = decoder
+        self.joint = joint
+        self.vocabulary = vocabulary
+        self.maskedTokenIds = maskedTokenIds
+    }
+
+    /// Decode encoded audio representations into token IDs with per-token log-probabilities.
+    ///
+    /// - Parameters:
+    ///   - encoded: Encoder output as MLMultiArray, shape `[1, T, encoderHidden]`
+    ///   - encodedLength: Number of valid encoder frames
+    /// - Returns: Tuple of (token IDs, per-token log-probs, overall confidence 0.0–1.0)
+    func decode(encoded: MLMultiArray, encodedLength: Int) throws -> (tokens: [Int], tokenLogProbs: [Float], confidence: Float) {
+        var tokens = [Int]()
+        var tokenLogProbs = [Float]()
+
+        // Initialize LSTM state
+        let hShape = [config.decoderLayers, 1, config.decoderHidden] as [NSNumber]
+        let h = try MLMultiArray(shape: hShape, dataType: .float16)
+        let c = try MLMultiArray(shape: hShape, dataType: .float16)
+        zeroFill(h)
+        zeroFill(c)
+
+        // Pre-allocate token array — reused every decoder step
+        let tokenArray = try MLMultiArray(shape: [1, 1], dataType: .int32)
+        let tokenPtr = tokenArray.dataPointer.assumingMemoryBound(to: Int32.self)
+
+        // Pre-allocate Float buffer for vDSP argmax on token logits
+        let argmaxBuf = UnsafeMutablePointer<Float>.allocate(capacity: config.vocabSize + 1)
+        defer { argmaxBuf.deallocate() }
+
+        // Initialize decoder with blank token (standard TDT decoding)
+        tokenPtr.pointee = Int32(config.blankTokenId)
+        let decoderProvider = ReusableFeatureProvider([
+            "token": tokenArray, "h": h, "c": c,
+        ])
+        let initOut = try decoder.prediction(from: decoderProvider)
+        var hState = initOut.featureValue(for: "h_out")!.multiArrayValue!
+        var cState = initOut.featureValue(for: "c_out")!.multiArrayValue!
+        var decoderOutput = initOut.featureValue(for: "decoder_output")!.multiArrayValue!
+
+        // Encoder slice buffer: [1, 1, encoderHidden]
+        let encSlice = try MLMultiArray(shape: [1, 1, config.encoderHidden as NSNumber], dataType: .float16)
+
+        // Pre-allocate reusable feature providers for the decode loop
+        let jointProvider = ReusableFeatureProvider([
+            "encoder_output": encSlice, "decoder_output": decoderOutput,
+        ])
+        decoderProvider.update("h", hState)
+        decoderProvider.update("c", cState)
+
+        var t = 0
+        while t < encodedLength {
+            // Extract encoder frame at position t (mutates encSlice data in-place)
+            copyEncoderFrame(from: encoded, at: t, to: encSlice)
+
+            // Joint network: (encoder_slice, decoder_output) → (token_logits, duration_logits)
+            let jointOut = try joint.prediction(from: jointProvider)
+
+            let tokenLogits = jointOut.featureValue(for: "token_logits")!.multiArrayValue!
+            let durationLogits = jointOut.featureValue(for: "duration_logits")!.multiArrayValue!
+
+            let tokenId = argmax(tokenLogits, count: config.vocabSize + 1, floatBuf: argmaxBuf, masked: maskedTokenIds)
+
+            if tokenId == config.blankTokenId {
+                t += 1
+            } else {
+                // Keep model-control emissions out of the transcript, but still feed them into
+                // the decoder state below. Token ordering is not a valid classifier: plain digit
+                // tokens 0...9 occupy IDs 234...243 between special-token ranges.
+                if vocabulary.isTextToken(tokenId) {
+                    tokens.append(tokenId)
+                    // Compute log-softmax: log_prob = logit[id] - log(sum(exp(logits)))
+                    let logProb = logSoftmax(tokenLogits, tokenId: tokenId, count: config.vocabSize + 1, floatBuf: argmaxBuf)
+                    tokenLogProbs.append(logProb)
+                }
+
+                let durationIdx = argmax(durationLogits, count: config.numDurationBins, floatBuf: nil)
+                let duration = config.durationBins[durationIdx]
+                t += max(duration, 1)
+
+                // Update decoder state with the emitted token
+                tokenPtr.pointee = Int32(tokenId)
+                decoderProvider.update("h", hState)
+                decoderProvider.update("c", cState)
+                let decOut = try decoder.prediction(from: decoderProvider)
+                decoderOutput = decOut.featureValue(for: "decoder_output")!.multiArrayValue!
+                hState = decOut.featureValue(for: "h_out")!.multiArrayValue!
+                cState = decOut.featureValue(for: "c_out")!.multiArrayValue!
+
+                // Update joint provider with new decoder output
+                jointProvider.update("decoder_output", decoderOutput)
+            }
+        }
+
+        // Overall confidence: exp(mean log-prob) maps to 0–1
+        let confidence: Float
+        if !tokenLogProbs.isEmpty {
+            let meanLogProb = tokenLogProbs.reduce(0, +) / Float(tokenLogProbs.count)
+            confidence = min(1.0, exp(meanLogProb))
+        } else {
+            confidence = 0.0
+        }
+        return (tokens, tokenLogProbs, confidence)
+    }
+
+    // MARK: - Array Operations
+
+    /// Compute log-softmax for a specific token: log_prob = logit[id] - log(sum(exp(logits)))
+    /// Uses vDSP for efficient log-sum-exp over the vocabulary.
+    private func logSoftmax(_ array: MLMultiArray, tokenId: Int, count: Int, floatBuf: UnsafeMutablePointer<Float>) -> Float {
+        let ptr = array.dataPointer.assumingMemoryBound(to: Float16.self)
+        for i in 0..<count { floatBuf[i] = Float(ptr[i]) }
+
+        // log-sum-exp: find max, subtract, exp, sum, log, add max back
+        var maxVal: Float = 0
+        var maxIdx: vDSP_Length = 0
+        vDSP_maxvi(floatBuf, 1, &maxVal, &maxIdx, vDSP_Length(count))
+
+        // Subtract max for numerical stability
+        var negMax = -maxVal
+        vDSP_vsadd(floatBuf, 1, &negMax, floatBuf, 1, vDSP_Length(count))
+
+        // exp in-place
+        var n = Int32(count)
+        vvexpf(floatBuf, floatBuf, &n)
+
+        // sum
+        var sumExp: Float = 0
+        vDSP_sve(floatBuf, 1, &sumExp, vDSP_Length(count))
+
+        let logSumExp = log(sumExp) + maxVal
+        let logit = Float(ptr[tokenId])
+        return logit - logSumExp
+    }
+
+    /// Copy encoder frame at time `t` into the slice buffer using memcpy.
+    private func copyEncoderFrame(from encoded: MLMultiArray, at t: Int, to slice: MLMultiArray) {
+        let hidden = config.encoderHidden
+        let src = encoded.dataPointer.advanced(by: t * hidden * MemoryLayout<Float16>.stride)
+        memcpy(slice.dataPointer, src, hidden * MemoryLayout<Float16>.stride)
+    }
+
+    /// Find the index of the maximum value in the first `count` elements.
+    /// Uses vDSP for large arrays (token logits); scalar for small arrays (duration logits).
+    private func argmax(_ array: MLMultiArray, count: Int, floatBuf: UnsafeMutablePointer<Float>?, masked: Set<Int> = []) -> Int {
+        let ptr = array.dataPointer.assumingMemoryBound(to: Float16.self)
+
+        // Small arrays or no buffer: scalar path (duration logits; never masked)
+        if count <= 16 || floatBuf == nil {
+            var maxIdx = 0
+            var maxVal = ptr[0]
+            for i in 1..<count {
+                if ptr[i] > maxVal {
+                    maxVal = ptr[i]
+                    maxIdx = i
+                }
+            }
+            return maxIdx
+        }
+
+        // Large arrays: convert Float16→Float, then vDSP_maxvi
+        for i in 0..<count { floatBuf![i] = Float(ptr[i]) }
+        // Suppress disallowed tags so only requested language tags can condition the decode.
+        for id in masked where id >= 0 && id < count {
+            floatBuf![id] = -Float.greatestFiniteMagnitude
+        }
+        var maxVal: Float = 0
+        var maxIdx: vDSP_Length = 0
+        vDSP_maxvi(floatBuf!, 1, &maxVal, &maxIdx, vDSP_Length(count))
+        return Int(maxIdx)
+    }
+
+    /// Zero-fill an MLMultiArray using memset.
+    private func zeroFill(_ array: MLMultiArray) {
+        memset(array.dataPointer, 0, array.count * MemoryLayout<Float16>.stride)
+    }
+}

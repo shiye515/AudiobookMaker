@@ -1,0 +1,59 @@
+name: Bug 反馈
+description: 功能异常、崩溃、解析/导出错误
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填全，能大幅加快定位。
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      description: 应用「关于」或构建号 / commit hash
+      placeholder: "1.0 (2) 或 abc1234"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 系统与机型
+      placeholder: "macOS 15.5 / MacBook Pro M3 Pro"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 导入 …
+        2. 点击 …
+        3. …
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 截图
+      description: 应用内打开日志目录，粘贴相关片段（可打码路径中的用户名）
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 自检
+      options:
+        - label: 已搜索过既有 Issue
+          required: true
+        - label: 若与 EPUB 相关，已用 `scripts/verify_epub_split.sh` 或 `--verify-epub-split` 试过

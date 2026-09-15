@@ -1,0 +1,47 @@
+abm
+Copyright (c) 2026 shiye and abm contributors
+
+This product is licensed under the MIT License (see LICENSE).
+It includes third-party software. Summary of notable components:
+
+-------------------------------------------------------------------------------
+speech-swift (vendored at Vendor/speech-swift)
+-------------------------------------------------------------------------------
+Upstream: https://github.com/soniqo/speech-swift
+License: Apache License 2.0 (Vendor/speech-swift/LICENSE)
+Local patch: CamPlusPlusSpeaker.swift uses CoreML float32 multiarrays instead
+of Float16 so the package compiles for x86_64 during Archive. See
+Vendor/speech-swift/PATCH.md.
+
+-------------------------------------------------------------------------------
+mlx-swift and related MLX packages (resolved via SPM)
+-------------------------------------------------------------------------------
+Upstream: https://github.com/ml-explore/mlx-swift
+License: MIT
+
+-------------------------------------------------------------------------------
+ZIPFoundation (resolved via SPM)
+-------------------------------------------------------------------------------
+Upstream: https://github.com/weichsel/ZIPFoundation
+License: MIT
+
+-------------------------------------------------------------------------------
+ffmpeg (optional bundled helper, built by scripts/build-ffmpeg.sh)
+-------------------------------------------------------------------------------
+Upstream: https://ffmpeg.org
+License: LGPL 2.1 (or later for components enabled in the minimal build)
+License text is copied to abm/Tools/ffmpeg-LICENSE when the binary is built
+(not committed to git). The binary is distributed as a separate helper
+executable inside the app bundle Resources folder and is not linked into the
+main executable. Rebuild or replace it per LGPL terms if required.
+
+Minimal configure flags are documented in scripts/build-ffmpeg.sh (container
+remux / AAC encode only; no GPL-only components enabled by default).
+
+-------------------------------------------------------------------------------
+Model weights (NOT included in this repository)
+-------------------------------------------------------------------------------
+CosyVoice3 and CAM++ speaker weights are downloaded at first run from
+Hugging Face into the user cache directory. Model licenses and usage terms
+are governed by their upstream repositories and cards; review them before
+redistribution.

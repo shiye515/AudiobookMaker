@@ -1,0 +1,70 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: macos-15
+    timeout-minutes: 45
+    # The virtualized runner has no usable Neural Engine AND its paravirtual
+    # GPU can't JIT CoreML's first-load Metal program for stateful graphs, so
+    # both ANE and cpuAndGPU loads hang. Force cpuOnly — no ANE/GPU codegen,
+    # deterministic, and fine for correctness assertions. On-device keeps ANE.
+    env:
+      SPEECH_COREML_COMPUTE_UNITS: cpuOnly
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v5
+        with:
+          path: .build
+          key: spm-${{ runner.os }}-${{ hashFiles('Package.swift') }}
+
+      - name: Resolve dependencies (heals a corrupt cache)
+        run: ./scripts/ci_resolve.sh
+
+      - name: Build debug
+        run: swift build --build-tests --disable-sandbox
+
+      - name: Build metallib
+        run: ./scripts/build_mlx_metallib.sh debug
+
+      - name: Copy metallib to test bundle
+        run: |
+          ARCH="$(uname -m)-apple-macosx"
+          for BUNDLE in .build/"$ARCH"/debug/*.xctest/Contents/MacOS; do
+            [ -d "$BUNDLE" ] && cp .build/debug/mlx.metallib "$BUNDLE/" 2>/dev/null || true
+          done
+
+      - name: Run unit tests (skip E2E — those require model downloads)
+        run: >
+          swift test --skip-build
+          --skip E2E
+          --skip StreamingASRTests
+          --skip ForcedAlignerTests
+          --skip SileroVADTests
+          --skip SpeechVADTests
+          --skip WeSpeakerTests
+          --skip SortformerTests
+          --skip PersonaPlexTests
+          --skip ParakeetASRTests
+          --skip CosyVoiceTTSTests
+          --skip KokoroTTSTests
+          --skip StreamingAudioPlayerTests
+
+      - name: Build demo apps (release only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          for demo in Examples/SpeechDemo Examples/PersonaPlexDemo; do
+            echo "Building $demo..."
+            (cd "$demo" && swift build --disable-sandbox) || exit 1
+          done

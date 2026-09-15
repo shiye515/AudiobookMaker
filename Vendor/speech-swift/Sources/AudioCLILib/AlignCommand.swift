@@ -1,0 +1,130 @@
+import Foundation
+import ArgumentParser
+import Qwen3ASR
+import AudioCommon
+
+public struct AlignCommand: ParsableCommand {
+    public static let configuration = CommandConfiguration(
+        commandName: "align",
+        abstract: "Forced alignment: align text to audio with word-level timestamps"
+    )
+
+    @Argument(help: "Audio file (WAV, any sample rate)")
+    public var audioFile: String
+
+    @Option(name: .shortAndLong, help: "Text to align (if omitted, transcribes first)")
+    public var text: String?
+
+    @Option(name: .shortAndLong, help: "ASR model for transcription: 0.6B (default), 1.7B, or full ID")
+    public var model: String = "0.6B"
+
+    @Option(name: .long, help: "Forced aligner backend: mlx (default) or coreml")
+    public var engine: String = "mlx"
+
+    @Option(name: .long, help: "Forced aligner model ID (defaults depend on --engine)")
+    public var alignerModel: String?
+
+    @Option(name: .long, help: "Language hint (optional)")
+    public var language: String?
+
+    @Option(name: .long, help: "Max ASR decoder tokens when transcribing (≈ 250 tokens/min)")
+    public var maxTokens: Int = 4096
+
+    public init() {}
+
+    public func run() throws {
+        try runAsync {
+            print("Loading audio: \(audioFile)")
+            let audio = try AudioFileLoader.load(
+                url: URL(fileURLWithPath: audioFile), targetSampleRate: 24000)
+            print("  Loaded \(audio.count) samples (\(formatDuration(audio.count))s)")
+
+            var textToAlign = text
+
+            if textToAlign == nil {
+                let modelId = resolveASRModelId(model)
+                let detectedSize = ASRModelSize.detect(from: modelId)
+                let sizeLabel = detectedSize == .large ? "1.7B" : "0.6B"
+                print("Loading ASR model (\(sizeLabel)): \(modelId)")
+
+                let asrModel = try await Qwen3ASRModel.fromPretrained(
+                    modelId: modelId, progressHandler: reportProgress)
+
+                print("Transcribing...")
+                textToAlign = asrModel.transcribe(
+                    audio: audio,
+                    sampleRate: 24000,
+                    language: language,
+                    maxTokens: maxTokens)
+                print("Transcription: \(textToAlign!)")
+            }
+
+            guard let alignText = textToAlign, !alignText.isEmpty else {
+                print("Error: no text to align")
+                throw ExitCode(1)
+            }
+
+            switch engine.lowercased() {
+            case "coreml":
+                #if canImport(CoreML)
+                try await runCoreML(audio: audio, text: alignText)
+                #else
+                print("Error: CoreML not available on this platform")
+                throw ExitCode(1)
+                #endif
+            case "mlx", "":
+                try await runMLX(audio: audio, text: alignText)
+            default:
+                print("Error: unknown --engine '\(engine)'. Expected mlx or coreml.")
+                throw ExitCode(1)
+            }
+        }
+    }
+
+    // MARK: - Engines
+
+    private func runMLX(audio: [Float], text: String) async throws {
+        let modelId = alignerModel ?? "aufklarer/Qwen3-ForcedAligner-0.6B-4bit"
+        print("Loading MLX aligner: \(modelId)")
+        let aligner = try await Qwen3ForcedAligner.fromPretrained(
+            modelId: modelId, progressHandler: reportProgress)
+        print("Aligning (MLX)...")
+        let start = Date()
+        let aligned = aligner.alignLong(
+            audio: audio,
+            text: text,
+            sampleRate: 24000,
+            language: language ?? "English",
+            progressHandler: { msg in print("  \(msg)") })
+        let elapsed = Date().timeIntervalSince(start)
+        printAligned(aligned)
+        print("Alignment took \(String(format: "%.2f", elapsed))s")
+    }
+
+    #if canImport(CoreML)
+    private func runCoreML(audio: [Float], text: String) async throws {
+        let modelId = alignerModel ?? "aufklarer/Qwen3-ForcedAligner-0.6B-CoreML-FP16"
+        print("Loading CoreML aligner: \(modelId)")
+        let aligner = try await CoreMLForcedAligner.fromPretrained(
+            modelId: modelId, progressHandler: reportProgress)
+        print("Aligning (CoreML)...")
+        let start = Date()
+        let aligned = try aligner.align(
+            audio: audio,
+            text: text,
+            sampleRate: 24000,
+            language: language ?? "English")
+        let elapsed = Date().timeIntervalSince(start)
+        printAligned(aligned)
+        print("Alignment took \(String(format: "%.2f", elapsed))s")
+    }
+    #endif
+
+    private func printAligned(_ aligned: [AlignedWord]) {
+        for word in aligned {
+            let startStr = String(format: "%.2f", word.startTime)
+            let endStr = String(format: "%.2f", word.endTime)
+            print("[\(startStr)s - \(endStr)s] \(word.text)")
+        }
+    }
+}

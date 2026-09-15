@@ -1,20 +1,36 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  项目：abm — CosyVoice TTS macOS 原生应用。
+  技术栈：Swift 6 + SwiftUI（macOS 15+），Xcode 工程 abm.xcodeproj。
+  TTS 引擎：soniqo/speech-swift（SPM 产品 CosyVoiceTTS，无 tag，锁定 commit hash），
+  模型 Fun-CosyVoice3-0.5B（MLX 量化，零样本克隆，音色 = 参考音频）。
+  架构：MVVM 倾向，Core/（引擎与状态）、Models/、Services/（导入/导出/播放/存储）、Views/。
+  工作流：OpenSpec spec-driven；主规格 openspec/specs/，变更提案 openspec/changes/。
+  文档：docs/cosyvoice-tts-app.md（核心技术文档）、docs/HANDOFF.md（交接文档）。
+  沟通与注释使用中文；技术路线已定，不重新调研。
+  Git：禁止自动暂存/提交文件（git add / git commit 需用户明确要求）。
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - 使用中文撰写
+    - 必须包含 "Non-goals"（非目标）一节
+    - 与既有规格（openspec/specs/）保持一致，引用能力名而非重复正文
+  specs:
+    - 使用中文撰写
+    - 每个 Scenario 使用 "#### Scenario:" 格式，含 WHEN/THEN
+    - 只描述可验证的行为，不写实现细节
+  design:
+    - 记录关键决策与备选方案，不复制 proposal 内容
+  tasks:
+    - 按可验证的小块拆分任务，每项可独立验收
+
+operations:
+  apply:
+    guidance:
+      - 按 tasks.md 顺序实现，完成一项勾选一项
+      - 遵守 AGENTS.md：不自动 git add / git commit
+  archive:
+    guidance:
+      - 归档前确认 tasks.md 全部完成
+      - 归档时将 delta spec 同步到 openspec/specs/

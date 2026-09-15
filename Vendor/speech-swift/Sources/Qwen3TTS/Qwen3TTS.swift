@@ -4,6 +4,7 @@ import MLX
 import MLXNN
 import MLXFast
 import AudioCommon
+import os
 
 /// Errors thrown by streaming TTS synthesis.
 public enum TTSError: Error, LocalizedError {
@@ -18,6 +19,11 @@ public enum TTSError: Error, LocalizedError {
             return "Unknown language '\(lang)'"
         }
     }
+}
+
+private struct CodePredictorFrameCompileKey: Hashable {
+    let greedy: Bool
+    let topK: Int
 }
 
 /// Main Qwen3-TTS model for text-to-speech synthesis.
@@ -78,6 +84,9 @@ public class Qwen3TTSModel {
     /// Talker is compiled with shapeless=true — RoPE offset passed as regular MLXArray input,
     /// growing KV cache handled by shapeless mode, batch dim uses -1 reshapes.
     private var compiledCPTransformer: (([MLXArray]) -> [MLXArray])?
+    private var compiledCodePredictorFrames: [
+        CodePredictorFrameCompileKey: ([MLXArray]) -> [MLXArray]
+    ] = [:]
 
     /// Cache for voice-cloning reference audio artifacts (speaker embedding, ICL codec tokens).
     /// Bounded LRU; survives across synthesize calls on the same model instance.
@@ -120,6 +129,48 @@ public class Qwen3TTSModel {
         sampling: SamplingConfig = .default,
         languageExplicit: Bool = false
     ) -> [Float] {
+        synthesize(
+            text: text,
+            language: language,
+            speaker: speaker,
+            instruct: instruct,
+            sampling: sampling,
+            languageExplicit: languageExplicit,
+            checkCancellation: {})
+    }
+
+    /// Cancellation-aware implementation used by the async generation
+    /// contract. The synchronous public API remains source-compatible and
+    /// deliberately supplies a no-op checkpoint.
+    func synthesizeCheckingCancellation(
+        text: String,
+        language: String = "english",
+        speaker: String? = nil,
+        instruct: String? = nil,
+        sampling: SamplingConfig = .default,
+        languageExplicit: Bool = false
+    ) throws -> [Float] {
+        try synthesize(
+            text: text,
+            language: language,
+            speaker: speaker,
+            instruct: instruct,
+            sampling: sampling,
+            languageExplicit: languageExplicit,
+            checkCancellation: { try Task.checkCancellation() })
+    }
+
+    private func synthesize(
+        text: String,
+        language: String,
+        speaker: String?,
+        instruct: String?,
+        sampling: SamplingConfig,
+        languageExplicit: Bool,
+        checkCancellation: () throws -> Void
+    ) rethrows -> [Float] {
+        try checkCancellation()
+
         guard let tokenizer = tokenizer else {
             fatalError("Tokenizer not loaded. Call setTokenizer() first.")
         }
@@ -131,8 +182,16 @@ public class Qwen3TTSModel {
         let effectiveInstruct = instruct ?? (speakerConfig != nil ? Self.defaultInstruct : nil)
 
         guard let langId = CodecTokens.languageId(for: effectiveLanguage) else {
-            print("Warning: Unknown language '\(effectiveLanguage)', defaulting to English")
-            return synthesize(text: text, language: "english", speaker: speaker, sampling: sampling)
+            AudioLog.inference.warning(
+                "Unknown language '\(effectiveLanguage, privacy: .private)', defaulting to English")
+            return try synthesize(
+                text: text,
+                language: "english",
+                speaker: speaker,
+                instruct: nil,
+                sampling: sampling,
+                languageExplicit: false,
+                checkCancellation: checkCancellation)
         }
 
         let t0 = CFAbsoluteTimeGetCurrent()
@@ -147,6 +206,7 @@ public class Qwen3TTSModel {
             textTokens: textTokens, codecPrefixTokens: codecPrefixTokens, instructTokens: instructTokens)
 
         eval(prefillEmbeds, trailingTextHidden, ttsPadEmbed)
+        try checkCancellation()
         let t1 = CFAbsoluteTimeGetCurrent()
 
         // Stage 3: Autoregressive generation with per-step code predictor
@@ -154,34 +214,41 @@ public class Qwen3TTSModel {
         var cappedSampling = sampling
         cappedSampling.maxTokens = maxTokenCap(for: [text], tokenizer: tokenizer, sampling: sampling)
 
-        let (allCodebooks, numFrames) = generateWithCodePredictor(
+        let (allCodebooks, numFrames) = try generateWithCodePredictor(
             prefillEmbeds: prefillEmbeds,
             trailingTextHidden: trailingTextHidden,
             ttsPadEmbed: ttsPadEmbed,
-            sampling: cappedSampling)
+            sampling: cappedSampling,
+            checkCancellation: checkCancellation)
 
         eval(allCodebooks)
+        try checkCancellation()
         let t2 = CFAbsoluteTimeGetCurrent()
 
         guard numFrames > 0 else {
-            print("Warning: Talker generated no tokens")
+            AudioLog.inference.warning("Talker generated no tokens")
             return []
         }
 
         // Stage 4: Codec decode to waveform
         let outputSamples = numFrames * 1920
-        print("  Decoding \(numFrames) frames -> \(outputSamples) samples (\(String(format: "%.1f", Double(outputSamples) / 24000.0))s)...")
+        AudioLog.inference.debug(
+            "Decoding \(numFrames, privacy: .public) frames -> \(outputSamples, privacy: .public) samples (\(String(format: "%.1f", Double(outputSamples) / 24000.0), privacy: .public)s)")
         let waveform = codecDecoder.decode(codes: allCodebooks)
+        try checkCancellation()
         let t3 = CFAbsoluteTimeGetCurrent()
 
         let audioDur = Double(waveform.count) / 24000.0
-        print("  Timing: embed=\(String(format: "%.3f", t1-t0))s | " +
-              "generate=\(String(format: "%.3f", t2-t1))s (\(numFrames) steps, " +
-              "\(String(format: "%.0f", (t2-t1)/Double(numFrames)*1000))ms/step) | " +
-              "decode=\(String(format: "%.3f", t3-t2))s | " +
-              "total=\(String(format: "%.3f", t3-t0))s | " +
-              "audio=\(String(format: "%.2f", audioDur))s | " +
-              "RTF=\(String(format: "%.2f", (t3-t0)/audioDur))")
+        let embedTime = String(format: "%.3f", t1-t0)
+        let generateTime = String(format: "%.3f", t2-t1)
+        let millisecondsPerStep = String(
+            format: "%.0f", (t2-t1)/Double(numFrames)*1000)
+        let decodeTime = String(format: "%.3f", t3-t2)
+        let totalTime = String(format: "%.3f", t3-t0)
+        let audioDuration = String(format: "%.2f", audioDur)
+        let realTimeFactor = String(format: "%.2f", (t3-t0)/audioDur)
+        AudioLog.inference.info(
+            "TTS timing: embed=\(embedTime, privacy: .public)s | generate=\(generateTime, privacy: .public)s (\(numFrames, privacy: .public) steps, \(millisecondsPerStep, privacy: .public)ms/step) | decode=\(decodeTime, privacy: .public)s | total=\(totalTime, privacy: .public)s | audio=\(audioDuration, privacy: .public)s | RTF=\(realTimeFactor, privacy: .public)")
 
         return waveform
     }
@@ -212,7 +279,8 @@ public class Qwen3TTSModel {
         }
 
         guard let langId = CodecTokens.languageId(for: language) else {
-            print("Warning: Unknown language '\(language)', defaulting to English")
+            AudioLog.inference.warning(
+                "Unknown language '\(language, privacy: .private)', defaulting to English")
             return synthesizeWithVoiceClone(
                 text: text, referenceAudio: referenceAudio,
                 referenceSampleRate: referenceSampleRate, language: "english", sampling: sampling)
@@ -224,14 +292,16 @@ public class Qwen3TTSModel {
         let speakerEmbed: MLXArray
         if let cached = referenceAudioCache.speakerEmbed(for: referenceAudio, sampleRate: referenceSampleRate) {
             speakerEmbed = cached
-            print("  Speaker embedding: cache hit \(cached.shape)")
+            AudioLog.inference.debug(
+                "Speaker embedding: cache hit \(String(describing: cached.shape), privacy: .public)")
         } else {
             let mels = SpeakerMel.compute(audio: referenceAudio, sampleRate: referenceSampleRate)
             let embed = speakerEncoder(mels)  // [1, 1024]
             eval(embed)
             referenceAudioCache.storeSpeakerEmbed(embed, audio: referenceAudio, sampleRate: referenceSampleRate)
             speakerEmbed = embed
-            print("  Speaker embedding extracted: \(speakerEmbed.shape)")
+            AudioLog.inference.debug(
+                "Speaker embedding extracted: \(String(describing: speakerEmbed.shape), privacy: .public)")
         }
 
         // Stage 1: Prepare text tokens and codec prefix (no speaker token ID — using embedding)
@@ -263,24 +333,28 @@ public class Qwen3TTSModel {
         let t2 = CFAbsoluteTimeGetCurrent()
 
         guard numFrames > 0 else {
-            print("Warning: Talker generated no tokens")
+            AudioLog.inference.warning("Talker generated no tokens")
             return []
         }
 
         // Stage 4: Codec decode to waveform
         let outputSamples = numFrames * 1920
-        print("  Decoding \(numFrames) frames -> \(outputSamples) samples (\(String(format: "%.1f", Double(outputSamples) / 24000.0))s)...")
+        AudioLog.inference.debug(
+            "Decoding \(numFrames, privacy: .public) frames -> \(outputSamples, privacy: .public) samples (\(String(format: "%.1f", Double(outputSamples) / 24000.0), privacy: .public)s)")
         let waveform = codecDecoder.decode(codes: allCodebooks)
         let t3 = CFAbsoluteTimeGetCurrent()
 
         let audioDur = Double(waveform.count) / 24000.0
-        print("  Voice clone timing: embed=\(String(format: "%.3f", t1-t0))s | " +
-              "generate=\(String(format: "%.3f", t2-t1))s (\(numFrames) steps, " +
-              "\(String(format: "%.0f", (t2-t1)/Double(numFrames)*1000))ms/step) | " +
-              "decode=\(String(format: "%.3f", t3-t2))s | " +
-              "total=\(String(format: "%.3f", t3-t0))s | " +
-              "audio=\(String(format: "%.2f", audioDur))s | " +
-              "RTF=\(String(format: "%.2f", (t3-t0)/audioDur))")
+        let embedTime = String(format: "%.3f", t1-t0)
+        let generateTime = String(format: "%.3f", t2-t1)
+        let millisecondsPerStep = String(
+            format: "%.0f", (t2-t1)/Double(numFrames)*1000)
+        let decodeTime = String(format: "%.3f", t3-t2)
+        let totalTime = String(format: "%.3f", t3-t0)
+        let audioDuration = String(format: "%.2f", audioDur)
+        let realTimeFactor = String(format: "%.2f", (t3-t0)/audioDur)
+        AudioLog.inference.info(
+            "Voice clone timing: embed=\(embedTime, privacy: .public)s | generate=\(generateTime, privacy: .public)s (\(numFrames, privacy: .public) steps, \(millisecondsPerStep, privacy: .public)ms/step) | decode=\(decodeTime, privacy: .public)s | total=\(totalTime, privacy: .public)s | audio=\(audioDuration, privacy: .public)s | RTF=\(realTimeFactor, privacy: .public)")
 
         return waveform
     }
@@ -342,6 +416,8 @@ public class Qwen3TTSModel {
         languageExplicit: Bool = false,
         continuation: AsyncThrowingStream<AudioChunk, Error>.Continuation
     ) throws {
+        try Task.checkCancellation()
+
         guard let tokenizer = tokenizer else {
             throw TTSError.tokenizerNotLoaded
         }
@@ -368,6 +444,7 @@ public class Qwen3TTSModel {
         let (prefillEmbeds, trailingTextHidden, ttsPadEmbed) = buildPrefillEmbeddings(
             textTokens: textTokens, codecPrefixTokens: codecPrefixTokens, instructTokens: instructTokens)
         eval(prefillEmbeds, trailingTextHidden, ttsPadEmbed)
+        try Task.checkCancellation()
 
         // Stage 2: Autoregressive generation with chunked decode + emit
         let cpSamplingConfig = SamplingConfig(temperature: sampling.temperature, topK: sampling.topK)
@@ -379,6 +456,7 @@ public class Qwen3TTSModel {
             offset: MLXArray(Int32(0)),
             cache: nil)
         var talkerCache = newCache
+        try Task.checkCancellation()
 
         // Sample first token
         let lastLogits = logits[0..., (prefillLen - 1)..<prefillLen, 0...]
@@ -388,6 +466,7 @@ public class Qwen3TTSModel {
             generatedTokens: [],
             suppressRange: (2048, 3072),
             eosTokenId: CodecTokens.codecEos)
+        try Task.checkCancellation()
 
         if nextToken == Int32(CodecTokens.codecEos) {
             let chunk = AudioChunk(
@@ -408,6 +487,7 @@ public class Qwen3TTSModel {
             hiddenState: lastHidden,
             firstCodebookToken: nextToken,
             cpSamplingConfig: cpSamplingConfig)
+        try Task.checkCancellation()
         for (i, token) in codeTokens.enumerated() {
             generatedAllCodebooks[i + 1].append(token)
         }
@@ -421,12 +501,14 @@ public class Qwen3TTSModel {
 
         // Emit immediately if prefill already produced enough frames (e.g., firstChunkFrames=1)
         if generatedFirstCodebook.count >= nextEmitThreshold {
+            try Task.checkCancellation()
             let chunk = decodeAndEmitChunk(
                 allCodebooks: generatedAllCodebooks,
                 chunkStart: 0,
                 chunkEnd: generatedFirstCodebook.count,
                 decoderLeftContext: streaming.decoderLeftContext,
                 samplesPerFrame: samplesPerFrame)
+            try Task.checkCancellation()
             let audioChunk = AudioChunk(
                 samples: chunk,
                 sampleRate: 24000,
@@ -439,7 +521,10 @@ public class Qwen3TTSModel {
         }
 
         // Autoregressive generation loop
-        for iterIdx in 1..<safeMaxTokens {
+        try runQwen3TTSGenerationLoop(
+            1..<safeMaxTokens,
+            checkCancellation: { try Task.checkCancellation() }
+        ) { iterIdx in
             // Text side
             let textEmbed: MLXArray
             let trailingLen = trailingTextHidden.dim(1)
@@ -479,6 +564,7 @@ public class Qwen3TTSModel {
                     hiddenState: stepHidden,
                     firstCodebookToken: nextToken,
                     cpSamplingConfig: cpSamplingConfig)
+                try Task.checkCancellation()
                 for (i, token) in codeTokens.enumerated() {
                     generatedAllCodebooks[i + 1].append(token)
                 }
@@ -493,12 +579,14 @@ public class Qwen3TTSModel {
                 let chunkFrameStart = emittedFrames
                 let chunkFrameEnd = totalFrames
 
+                try Task.checkCancellation()
                 let chunk = decodeAndEmitChunk(
                     allCodebooks: generatedAllCodebooks,
                     chunkStart: chunkFrameStart,
                     chunkEnd: chunkFrameEnd,
                     decoderLeftContext: streaming.decoderLeftContext,
                     samplesPerFrame: samplesPerFrame)
+                try Task.checkCancellation()
 
                 let isFinalChunk = isEos || iterIdx == safeMaxTokens - 1
                 let audioChunk = AudioChunk(
@@ -515,28 +603,34 @@ public class Qwen3TTSModel {
                 nextEmitThreshold = emittedFrames + streaming.chunkFrames
             }
 
-            if isEos { break }
+            if isEos { return false }
 
             if iterIdx % 50 == 0 {
                 let estSec = Double(generatedFirstCodebook.count) / 12.5
-                print("  Streaming: \(generatedFirstCodebook.count) tokens (~\(String(format: "%.1f", estSec))s audio)...")
+                AudioLog.inference.debug(
+                    "Streaming: \(generatedFirstCodebook.count, privacy: .public) tokens (~\(String(format: "%.1f", estSec), privacy: .public)s audio)")
             }
+
+            return true
         }
 
         let numFrames = generatedFirstCodebook.count
         if numFrames >= safeMaxTokens && nextToken != Int32(CodecTokens.codecEos) {
             let estSec = Double(numFrames) / 12.5
-            print("Warning: Hit safety limit of \(safeMaxTokens) tokens (~\(String(format: "%.1f", estSec))s audio).")
+            AudioLog.inference.warning(
+                "Hit safety limit of \(safeMaxTokens, privacy: .public) tokens (~\(String(format: "%.1f", estSec), privacy: .public)s audio)")
         }
 
         // Emit remaining frames if any
         if emittedFrames < numFrames {
+            try Task.checkCancellation()
             let chunk = decodeAndEmitChunk(
                 allCodebooks: generatedAllCodebooks,
                 chunkStart: emittedFrames,
                 chunkEnd: numFrames,
                 decoderLeftContext: streaming.decoderLeftContext,
                 samplesPerFrame: samplesPerFrame)
+            try Task.checkCancellation()
             let audioChunk = AudioChunk(
                 samples: chunk,
                 sampleRate: 24000,
@@ -549,6 +643,7 @@ public class Qwen3TTSModel {
 
         // If EOS arrived with no new frames, emit a final sentinel
         if !emittedFinal {
+            try Task.checkCancellation()
             let audioChunk = AudioChunk(
                 samples: [],
                 sampleRate: 24000,
@@ -660,7 +755,8 @@ public class Qwen3TTSModel {
         let effectiveInstruct = instruct ?? (speakerConfig != nil ? Self.defaultInstruct : nil)
 
         guard let langId = CodecTokens.languageId(for: language) else {
-            print("Warning: Unknown language '\(language)', defaulting to English")
+            AudioLog.inference.warning(
+                "Unknown language '\(language, privacy: .private)', defaulting to English")
             return synthesizeBatch(texts: texts, language: "english", instruct: instruct, sampling: sampling, maxBatchSize: maxBatchSize)
         }
 
@@ -761,9 +857,9 @@ public class Qwen3TTSModel {
             let totalWaste = wastedSteps.reduce(0, +)
             let wasteRatio = Double(totalWaste) / Double(maxFrames * batchSize)
             if wasteRatio > 0.3 {
-                print("  Warning: \(Int(wasteRatio * 100))% padding waste " +
-                      "(items finished at: \(frameCounts.map { String($0) }.joined(separator: ", ")) steps). " +
-                      "Batch similar-length texts for better efficiency.")
+                let finishedSteps = frameCounts.map { String($0) }.joined(separator: ", ")
+                AudioLog.inference.warning(
+                    "\(Int(wasteRatio * 100), privacy: .public)% padding waste (items finished at: \(finishedSteps, privacy: .public) steps). Batch similar-length texts for better efficiency")
             }
         }
 
@@ -772,13 +868,15 @@ public class Qwen3TTSModel {
         for i in 0..<batchSize {
             let numFrames = frameCounts[i]
             if numFrames == 0 {
-                print("  Item \(i): no tokens generated")
+                AudioLog.inference.warning(
+                    "Batch item \(i, privacy: .public): no tokens generated")
                 results.append([])
                 continue
             }
             let codes = allCodebooksList[i]  // [1, 16, Ti]
             let outputSamples = numFrames * 1920
-            print("  Item \(i): decoding \(numFrames) frames -> \(outputSamples) samples (\(String(format: "%.1f", Double(outputSamples) / 24000.0))s)...")
+            AudioLog.inference.debug(
+                "Batch item \(i, privacy: .public): decoding \(numFrames, privacy: .public) frames -> \(outputSamples, privacy: .public) samples (\(String(format: "%.1f", Double(outputSamples) / 24000.0), privacy: .public)s)")
             let waveform = codecDecoder.decode(codes: codes)
             results.append(waveform)
         }
@@ -786,13 +884,14 @@ public class Qwen3TTSModel {
 
         let totalAudio = results.reduce(0.0) { $0 + Double($1.count) / 24000.0 }
         let totalFrames = frameCounts.reduce(0, +)
-        print("  Batch timing: embed=\(String(format: "%.3f", t1-t0))s | " +
-              "generate=\(String(format: "%.3f", t2-t1))s (\(totalFrames) total steps, " +
-              "\(batchSize) items) | " +
-              "decode=\(String(format: "%.3f", t3-t2))s | " +
-              "total=\(String(format: "%.3f", t3-t0))s | " +
-              "audio=\(String(format: "%.2f", totalAudio))s | " +
-              "RTF=\(String(format: "%.2f", (t3-t0)/max(totalAudio, 0.001)))")
+        let embedTime = String(format: "%.3f", t1-t0)
+        let generateTime = String(format: "%.3f", t2-t1)
+        let decodeTime = String(format: "%.3f", t3-t2)
+        let totalTime = String(format: "%.3f", t3-t0)
+        let audioDuration = String(format: "%.2f", totalAudio)
+        let realTimeFactor = String(format: "%.2f", (t3-t0)/max(totalAudio, 0.001))
+        AudioLog.inference.info(
+            "Batch timing: embed=\(embedTime, privacy: .public)s | generate=\(generateTime, privacy: .public)s (\(totalFrames, privacy: .public) total steps, \(batchSize, privacy: .public) items) | decode=\(decodeTime, privacy: .public)s | total=\(totalTime, privacy: .public)s | audio=\(audioDuration, privacy: .public)s | RTF=\(realTimeFactor, privacy: .public)")
 
         return results
     }
@@ -911,12 +1010,14 @@ public class Qwen3TTSModel {
             if iterIdx % 50 == 0 {
                 let estSec = Double(iterIdx) / 12.5
                 let doneCount = finishedArray.filter { $0 }.count
-                print("  Batch: \(iterIdx) steps (~\(String(format: "%.1f", estSec))s), \(doneCount)/\(batchSize) done...")
+                AudioLog.inference.debug(
+                    "Batch: \(iterIdx, privacy: .public) steps (~\(String(format: "%.1f", estSec), privacy: .public)s), \(doneCount, privacy: .public)/\(batchSize, privacy: .public) done")
             }
         }
 
         let totalSteps = allCBSteps.count
-        print("  Batch generation done: \(totalSteps) steps, \(batchSize) items")
+        AudioLog.inference.debug(
+            "Batch generation done: \(totalSteps, privacy: .public) steps, \(batchSize, privacy: .public) items")
 
         // Stack all timesteps: [B, 16, T]
         let stepsStacked = stacked(allCBSteps, axis: 0)  // [T, B, 16]
@@ -1075,6 +1176,16 @@ public class Qwen3TTSModel {
             eval(groupLogits)
         }
 
+        // Compile the complete fixed 15-group predictor loop for the two common
+        // sampling modes. Other top-k values compile lazily on first use.
+        let sampledFrame = executeCompiledCodePredictorFrame(
+            inputsEmbeds: cpInput,
+            sampling: .default)
+        let greedyFrame = executeCompiledCodePredictorFrame(
+            inputsEmbeds: cpInput,
+            sampling: .greedy)
+        eval(sampledFrame, greedyFrame)
+
         // Compile codec decoder for kernel fusion (different from shader JIT compilation).
         // compile() fuses multiple kernel dispatches into fewer optimized kernels per chunk.
         // Warmup adds ~300ms to load time but saves on every generation.
@@ -1119,6 +1230,7 @@ public class Qwen3TTSModel {
             for (k, v) in newCache { result.append(k); result.append(v) }
             return result
         }
+
         let numCPLayers = config.codePredictor.numLayers
         let cpRef = codePredictor
 
@@ -1206,6 +1318,47 @@ public class Qwen3TTSModel {
         return (out[0], newCache)
     }
 
+    private func executeCompiledCodePredictorFrame(
+        inputsEmbeds: MLXArray,
+        sampling: SamplingConfig
+    ) -> MLXArray {
+        let greedy = sampling.temperature <= 0
+        let key = CodePredictorFrameCompileKey(
+            greedy: greedy,
+            topK: greedy ? 0 : sampling.topK)
+        let compiled: ([MLXArray]) -> [MLXArray]
+        if let cached = compiledCodePredictorFrames[key] {
+            compiled = cached
+        } else {
+            let predictor = codePredictor
+            compiled = compile(
+                inputs: [predictor],
+                outputs: [predictor],
+                shapeless: false
+            ) { inputs in
+                [predictor.predictFrame(
+                    inputsEmbeds: inputs[0],
+                    temperature: inputs[1],
+                    gumbels: inputs[2],
+                    topK: key.topK,
+                    greedy: key.greedy)]
+            }
+            compiledCodePredictorFrames[key] = compiled
+        }
+
+        let predictedGroupCount = config.codePredictor.numCodeGroups - 1
+        let gumbels = greedy
+            ? MLXArray.zeros([predictedGroupCount, config.codePredictor.vocabSize])
+            : stacked((0..<predictedGroupCount).map { _ in
+                MLXRandom.gumbel([config.codePredictor.vocabSize])
+            })
+        return compiled([
+            inputsEmbeds,
+            MLXArray(sampling.temperature),
+            gumbels,
+        ])[0]
+    }
+
     // MARK: - Speaker Resolution
 
     /// Resolve speaker name to token ID and effective language.
@@ -1220,15 +1373,16 @@ public class Qwen3TTSModel {
         }
 
         guard let config = speakerConfig else {
-            print("Warning: Speaker '\(speakerName)' requested but model has no speaker support. " +
-                  "Use the CustomVoice model variant for speaker selection.")
+            AudioLog.inference.warning(
+                "Speaker '\(speakerName, privacy: .private)' requested but model has no speaker support. Use the CustomVoice model variant for speaker selection")
             return (nil, language)
         }
 
         let normalizedName = speakerName.lowercased()
         guard let tokenId = config.speakerIds[normalizedName] else {
             let available = config.availableSpeakers.joined(separator: ", ")
-            print("Warning: Unknown speaker '\(speakerName)'. Available speakers: \(available)")
+            AudioLog.inference.warning(
+                "Unknown speaker '\(speakerName, privacy: .private)'. Available speakers: \(available, privacy: .public)")
             return (nil, language)
         }
 
@@ -1426,6 +1580,23 @@ public class Qwen3TTSModel {
         ttsPadEmbed: MLXArray,
         sampling: SamplingConfig
     ) -> (allCodebooks: MLXArray, numFrames: Int) {
+        generateWithCodePredictor(
+            prefillEmbeds: prefillEmbeds,
+            trailingTextHidden: trailingTextHidden,
+            ttsPadEmbed: ttsPadEmbed,
+            sampling: sampling,
+            checkCancellation: {})
+    }
+
+    private func generateWithCodePredictor(
+        prefillEmbeds: MLXArray,
+        trailingTextHidden: MLXArray,
+        ttsPadEmbed: MLXArray,
+        sampling: SamplingConfig,
+        checkCancellation: () throws -> Void
+    ) rethrows -> (allCodebooks: MLXArray, numFrames: Int) {
+        try checkCancellation()
+
         // Reference (QwenLM + mlx-audio) uses 2048 here. Earlier 500 cap clipped
         // long lines mid-word and produced hard-cut endings.
         let safeMaxTokens = min(sampling.maxTokens, 2048)
@@ -1445,6 +1616,7 @@ public class Qwen3TTSModel {
             offset: MLXArray(Int32(0)),
             cache: talkerCache)
         talkerCache = newCache
+        try checkCancellation()
 
         // Sample first token from last position
         let lastLogits = logits[0..., (prefillLen - 1)..<prefillLen, 0...]
@@ -1454,6 +1626,7 @@ public class Qwen3TTSModel {
             generatedTokens: generatedFirstCodebook,
             suppressRange: (2048, 3072),
             eosTokenId: CodecTokens.codecEos)
+        try checkCancellation()
 
         if nextToken == Int32(CodecTokens.codecEos) {
             return (MLXArray.zeros([1, 16, 0]), 0)
@@ -1470,6 +1643,7 @@ public class Qwen3TTSModel {
             hiddenState: lastHidden,
             firstCodebookToken: nextToken,
             cpSamplingConfig: cpSamplingConfig)
+        try checkCancellation()
         for (i, token) in codeTokens.enumerated() {
             generatedAllCodebooks[i + 1].append(token)
         }
@@ -1478,7 +1652,10 @@ public class Qwen3TTSModel {
         var step = prefillLen
 
         // Autoregressive generation
-        for iterIdx in 1..<safeMaxTokens {
+        try runQwen3TTSGenerationLoop(
+            1..<safeMaxTokens,
+            checkCancellation: checkCancellation
+        ) { iterIdx in
             // Text side: next trailing text embed or tts_pad
             let textEmbed: MLXArray
             let trailingLen = trailingTextHidden.dim(1)
@@ -1508,7 +1685,7 @@ public class Qwen3TTSModel {
                 suppressRange: (2048, 3072),
                 eosTokenId: CodecTokens.codecEos)
 
-            if nextToken == Int32(CodecTokens.codecEos) { break }
+            if nextToken == Int32(CodecTokens.codecEos) { return false }
 
             generatedFirstCodebook.append(nextToken)
             generatedAllCodebooks[0].append(nextToken)
@@ -1519,6 +1696,7 @@ public class Qwen3TTSModel {
                 hiddenState: stepHidden,
                 firstCodebookToken: nextToken,
                 cpSamplingConfig: cpSamplingConfig)
+            try checkCancellation()
             for (i, token) in codeTokens.enumerated() {
                 generatedAllCodebooks[i + 1].append(token)
             }
@@ -1527,20 +1705,24 @@ public class Qwen3TTSModel {
 
             if iterIdx % 50 == 0 {
                 let estSec = Double(generatedFirstCodebook.count) / 12.5
-                print("  Talker: \(generatedFirstCodebook.count) tokens (~\(String(format: "%.1f", estSec))s audio)...")
+                AudioLog.inference.debug(
+                    "Talker: \(generatedFirstCodebook.count, privacy: .public) tokens (~\(String(format: "%.1f", estSec), privacy: .public)s audio)")
             }
+
+            return true
         }
 
         let numFrames = generatedFirstCodebook.count
 
         if numFrames >= safeMaxTokens && nextToken != Int32(CodecTokens.codecEos) {
             let estSec = Double(numFrames) / 12.5
-            print("Warning: Hit safety limit of \(safeMaxTokens) tokens (~\(String(format: "%.1f", estSec))s audio). "
-                + "Increase SamplingConfig.maxTokens if you need longer output.")
+            AudioLog.inference.warning(
+                "Hit safety limit of \(safeMaxTokens, privacy: .public) tokens (~\(String(format: "%.1f", estSec), privacy: .public)s audio). Increase SamplingConfig.maxTokens if you need longer output")
         }
 
         let estAudioSec = Double(numFrames) / 12.5
-        print("  Talker done: \(numFrames) codec tokens (~\(String(format: "%.1f", estAudioSec))s audio)")
+        AudioLog.inference.debug(
+            "Talker done: \(numFrames, privacy: .public) codec tokens (~\(String(format: "%.1f", estAudioSec), privacy: .public)s audio)")
 
         // Stack all codebooks: [1, 16, T]
         let codebookArrays = generatedAllCodebooks.map { tokens in
@@ -1559,16 +1741,12 @@ public class Qwen3TTSModel {
     /// - Step 0: prefill [hidden_state, code_0_embed] (length 2)
     /// - Steps 1-14: single embedding of previous code token (length 1), KV cache
     ///
-    /// Uses lazy evaluation: all 15 groups are chained as a single MLX computation graph
-    /// with zero GPU sync barriers. One `eval()` at the end materializes all tokens.
-    /// This reduces per-step GPU syncs from 15 to 1.
+    /// The fixed group chain runs as one compiled graph and is extracted once per frame.
     private func predictCodebooksForTimestep(
         hiddenState: MLXArray,
         firstCodebookToken: Int32,
         cpSamplingConfig: SamplingConfig
     ) -> [Int32] {
-        var cpCache: [(MLXArray, MLXArray)]? = nil
-
         // First codebook embedding (from talker's codec embedding)
         let code0Embed = talker.embedCodec(
             MLXArray([firstCodebookToken]).expandedDimensions(axis: 0))  // [1, 1, D]
@@ -1576,130 +1754,271 @@ public class Qwen3TTSModel {
         // Prefill: [hidden_state, code_0_embed] — length 2
         let prefillInput = concatenated([hiddenState, code0Embed], axis: 1)  // [1, 2, D]
 
-        // Predict codebook group 0 (= codebook 2 overall)
-        let (cpLogits, cpNewCache) = codePredictor(
-            inputsEmbeds: prefillInput, groupIndex: 0, cache: nil)
-        cpCache = cpNewCache
-
-        // Sample lazily — returns MLXArray scalar, NO .item() sync
-        let lastCpLogits = cpLogits[0..., 1..<2, 0...]
-        var prevTokenArray = sampleTokenLazy(logits: lastCpLogits, config: cpSamplingConfig)
-        var lazyTokens: [MLXArray] = [prevTokenArray]
-
-        // Remaining 14 codebook groups — fully lazy chain, no GPU syncs
-        for groupIdx in 1..<(config.codePredictor.numCodeGroups - 1) {
-            // Embed previous group's token (lazy MLXArray → embedding, no sync needed)
-            let prevEmbed = codePredictor.embedCodecGroup(
-                prevTokenArray.reshaped(1, 1),
-                groupIndex: groupIdx - 1)  // [1, 1, D]
-
-            let cpResult = executeCPTransformerStep(hidden: prevEmbed, cache: cpCache!)
-            cpCache = cpResult.newCache
-            let groupLogits = codePredictor.lmHeads[groupIdx](cpResult.normed)
-
-            prevTokenArray = sampleTokenLazy(logits: groupLogits, config: cpSamplingConfig)
-            lazyTokens.append(prevTokenArray)
-        }
-
-        // ONE eval to materialize the entire 15-group computation graph
-        let tokenStack = stacked(lazyTokens)  // [15]
+        let tokenStack = executeCompiledCodePredictorFrame(
+            inputsEmbeds: prefillInput,
+            sampling: cpSamplingConfig)
         eval(tokenStack)
-        return tokenStack.asArray(Int32.self)  // bulk extraction, no per-token sync
+        return tokenStack.asArray(Int32.self)
     }
 }
 
 // MARK: - Model Loading
 
+/// Controls whether loading a Qwen3-TTS model changes the process-wide Metal wired-memory limit.
+public enum Qwen3TTSWiredMemoryPolicy: Equatable, Sendable {
+    /// Leave the process-wide wired-memory limit unchanged.
+    case none
+
+    /// Pin a fraction of Metal's recommended working set after the model is loaded.
+    case pin(fraction: Double)
+}
+
+/// Errors raised before a Qwen3-TTS model is loaded from caller-provided files.
+public enum Qwen3TTSLoadingError: Error, Equatable, LocalizedError, Sendable {
+    /// A local-loader URL did not use the `file` scheme.
+    case nonFileURL(URL)
+
+    /// A required local directory does not exist.
+    case directoryNotFound(URL)
+
+    /// A required local directory URL resolves to a non-directory item.
+    case pathIsNotDirectory(URL)
+
+    /// A required file is missing or does not resolve to a regular file.
+    case requiredFileUnavailable(URL)
+
+    /// A model directory has no complete safetensors checkpoint.
+    case weightsUnavailable(URL)
+
+    /// A bundle's `config.json` is malformed, contradictory, or unsupported.
+    case invalidConfiguration(URL, reason: String)
+
+    /// The requested Metal wired-memory fraction is not finite or is outside `(0, 1]`.
+    case invalidWiredMemoryFraction(Double)
+
+    public var errorDescription: String? {
+        switch self {
+        case .nonFileURL(let url):
+            return "Qwen3-TTS local loading requires a file URL, got: \(url.absoluteString)"
+        case .directoryNotFound(let url):
+            return "Required Qwen3-TTS directory does not exist: \(url.path)"
+        case .pathIsNotDirectory(let url):
+            return "Required Qwen3-TTS path is not a directory: \(url.path)"
+        case .requiredFileUnavailable(let url):
+            return "Required Qwen3-TTS file is missing or is not a regular file: \(url.path)"
+        case .weightsUnavailable(let url):
+            return "No complete Qwen3-TTS safetensors checkpoint found in: \(url.path)"
+        case .invalidConfiguration(let url, let reason):
+            return "Invalid Qwen3-TTS configuration at \(url.path): \(reason)"
+        case .invalidWiredMemoryFraction(let fraction):
+            return "Qwen3-TTS wired-memory fraction must be finite and in (0, 1], got: \(fraction)"
+        }
+    }
+}
+
 public extension Qwen3TTSModel {
-    /// Load model from HuggingFace hub
+    /// Load model from HuggingFace hub.
+    ///
+    /// Bundle layout varies across variants — the bf16 repos ship a single
+    /// `model.safetensors` with no index, the 8-bit repos ship an index next to
+    /// it, and a re-export could ship numbered shards. Weight files are
+    /// therefore never named here; `downloadWeights` discovers them from the
+    /// repository and picks the right set when both layouts are present.
     static func fromPretrained(
         modelId: String = Qwen3TTSModel.defaultModelId,
         tokenizerModelId: String = "Qwen/Qwen3-TTS-Tokenizer-12Hz",
         cacheDir: URL? = nil,
+        tokenizerCacheDir: URL? = nil,
         offlineMode: Bool = false,
+        wiredMemoryPolicy: Qwen3TTSWiredMemoryPolicy = .pin(fraction: 0.9),
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> Qwen3TTSModel {
         progressHandler?(0.05, "Preparing download...")
 
-        // Auto-detect model size and quantization from model ID
+        // The model ID is a size fallback for legacy bundles that omit architecture metadata.
+        // Quantization always comes from config.json; its absence means an unquantized bundle.
         let detectedSize = TTSModelSize.detect(from: modelId)
-        var detectedBits = TTSModelSize.detectBits(from: modelId)
 
         // Download main model weights
         let mainCacheDir = try cacheDir ?? HuggingFaceDownloader.getCacheDirectory(for: modelId)
-        if !HuggingFaceDownloader.weightsExist(in: mainCacheDir) {
-            progressHandler?(0.1, "Downloading TTS model weights...")
+        let requiredMainFiles = ["config.json", "vocab.json"]
+        if !HuggingFaceDownloader.weightsExist(in: mainCacheDir)
+            || requiredMainFiles.contains(where: {
+                !FileManager.default.fileExists(
+                    atPath: mainCacheDir.appendingPathComponent($0).path)
+            })
+        {
+            progressHandler?(0.1, "Resolving TTS model files...")
             try await HuggingFaceDownloader.downloadWeights(
                 modelId: modelId,
                 to: mainCacheDir,
-                additionalFiles: ["vocab.json", "merges.txt", "tokenizer_config.json"],
+                additionalFiles: ["merges.txt", "tokenizer_config.json", "vocab.json"],
                 offlineMode: offlineMode,
                 progressHandler: { progress in
-                    progressHandler?(0.1 + progress * 0.3, "Downloading TTS model...")
+                    progressHandler?(0.1 + progress * 0.3, "Downloading TTS model weights...")
                 })
         }
 
         // Download tokenizer/codec weights
-        let tokenizerCacheDir = try HuggingFaceDownloader.getCacheDirectory(for: tokenizerModelId)
-        if !HuggingFaceDownloader.weightsExist(in: tokenizerCacheDir) {
+        let resolvedTokenizerCacheDir = try tokenizerCacheDir
+            ?? HuggingFaceDownloader.getCacheDirectory(for: tokenizerModelId)
+        if !HuggingFaceDownloader.weightsExist(in: resolvedTokenizerCacheDir) {
             progressHandler?(0.4, "Downloading speech tokenizer...")
             try await HuggingFaceDownloader.downloadWeights(
                 modelId: tokenizerModelId,
-                to: tokenizerCacheDir,
+                to: resolvedTokenizerCacheDir,
                 offlineMode: offlineMode,
                 progressHandler: { progress in
                     progressHandler?(0.4 + progress * 0.2, "Downloading speech tokenizer...")
                 })
         }
 
-        // Parse config.json for speaker config and quantization fallback
-        let configPath = mainCacheDir.appendingPathComponent("config.json")
-        if FileManager.default.fileExists(atPath: configPath.path) {
-            if let data = try? Data(contentsOf: configPath),
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let quantConfig = json["quantization_config"] as? [String: Any],
-               let configBits = quantConfig["bits"] as? Int {
-                detectedBits = configBits
-            }
-        }
+        let ttsConfig = Qwen3TTSConfig.config(for: detectedSize, bits: 0)
+        return try fromLocal(
+            modelDirectory: mainCacheDir,
+            tokenizerDirectory: resolvedTokenizerCacheDir,
+            configuration: ttsConfig,
+            wiredMemoryPolicy: wiredMemoryPolicy,
+            progressHandler: { progress, message in
+                progressHandler?(0.6 + progress * 0.4, message)
+            })
+    }
 
-        // Create model with detected config
-        let ttsConfig = Qwen3TTSConfig.config(for: detectedSize, bits: detectedBits)
-        let model = Qwen3TTSModel(config: ttsConfig)
+    /// Load a Qwen3-TTS model from two explicit local directories without resolving a cache,
+    /// contacting a remote endpoint, or downloading files.
+    ///
+    /// The main model directory must contain `config.json`, `vocab.json`, and a complete
+    /// safetensors checkpoint. The tokenizer directory must contain its own complete
+    /// safetensors checkpoint. Model architecture and quantization are resolved from the
+    /// main bundle's `config.json` before any MLX modules are allocated.
+    ///
+    /// - Parameters:
+    ///   - modelDirectory: Directory containing the talker, code predictor, speaker encoder,
+    ///     text tokenizer, and model configuration.
+    ///   - tokenizerDirectory: Directory containing the speech-tokenizer codec weights.
+    ///   - configuration: Optional speech-tokenizer decoder configuration and model-size
+    ///     fallback for legacy bundles. Bundle architecture and quantization metadata take
+    ///     precedence.
+    ///   - wiredMemoryPolicy: Whether loading may change the process-wide Metal wired limit.
+    ///   - progressHandler: Optional loading progress callback.
+    static func fromLocal(
+        modelDirectory: URL,
+        tokenizerDirectory: URL,
+        configuration: Qwen3TTSConfig? = nil,
+        wiredMemoryPolicy: Qwen3TTSWiredMemoryPolicy = .none,
+        progressHandler: ((Double, String) -> Void)? = nil
+    ) throws -> Qwen3TTSModel {
+        progressHandler?(0.05, "Validating local model bundles...")
+        try validateLocalBundle(
+            modelDirectory: modelDirectory,
+            tokenizerDirectory: tokenizerDirectory)
+        try validateWiredMemoryPolicy(wiredMemoryPolicy)
 
-        // Parse speaker config
-        if FileManager.default.fileExists(atPath: configPath.path) {
-            model.speakerConfig = try? parseSpeakerConfig(from: configPath)
-        }
+        let configPath = modelDirectory.appendingPathComponent("config.json")
+        let vocabPath = modelDirectory.appendingPathComponent("vocab.json")
+        let resolvedConfiguration = try resolveLocalConfiguration(
+            from: configPath,
+            fallback: configuration)
+        let model = Qwen3TTSModel(config: resolvedConfiguration)
+        model.speakerConfig = try parseSpeakerConfig(from: configPath)
 
-        // Load tokenizer
-        progressHandler?(0.6, "Loading tokenizer...")
-        let vocabPath = mainCacheDir.appendingPathComponent("vocab.json")
-        if FileManager.default.fileExists(atPath: vocabPath.path) {
-            let tokenizer = Qwen3Tokenizer()
-            try tokenizer.load(from: vocabPath)
-            model.setTokenizer(tokenizer)
-        }
+        progressHandler?(0.15, "Loading tokenizer...")
+        let tokenizer = Qwen3Tokenizer()
+        try tokenizer.load(from: vocabPath)
+        model.setTokenizer(tokenizer)
 
-        // Load Talker + Code Predictor + Speaker Encoder weights (single safetensors load)
-        progressHandler?(0.7, "Loading TTS model weights...")
+        progressHandler?(0.35, "Loading TTS model weights...")
         try TTSWeightLoader.loadTalkerAndCodePredictorWeights(
-            talker: model.talker, codePredictor: model.codePredictor, from: mainCacheDir,
-            castFloat16ToBFloat16: detectedBits == 0)
+            talker: model.talker,
+            codePredictor: model.codePredictor,
+            from: modelDirectory,
+            castFloat16ToBFloat16: resolvedConfiguration.talker.bits == 0)
         try TTSWeightLoader.loadSpeakerEncoderWeights(
-            into: model.speakerEncoder, from: mainCacheDir)
+            into: model.speakerEncoder, from: modelDirectory)
 
-        // Load Speech Tokenizer Decoder weights
-        progressHandler?(0.85, "Loading speech tokenizer decoder...")
+        progressHandler?(0.7, "Loading speech tokenizer decoder...")
         try TTSWeightLoader.loadSpeechTokenizerDecoderWeights(
-            into: model.codecDecoder, from: tokenizerCacheDir)
+            into: model.codecDecoder, from: tokenizerDirectory)
 
-        progressHandler?(0.95, "Warming up model...")
+        progressHandler?(0.9, "Warming up model...")
         model.warmUp()
 
-        MetalBudget.pinMemory()
+        try applyWiredMemoryPolicy(wiredMemoryPolicy)
         progressHandler?(1.0, "Ready")
         return model
+    }
+
+    internal static func validateLocalBundle(
+        modelDirectory: URL,
+        tokenizerDirectory: URL
+    ) throws {
+        try validateDirectory(modelDirectory)
+        try validateDirectory(tokenizerDirectory)
+        try validateRegularFile(modelDirectory.appendingPathComponent("config.json"))
+        try validateRegularFile(modelDirectory.appendingPathComponent("vocab.json"))
+        try validateWeights(in: modelDirectory)
+        try validateWeights(in: tokenizerDirectory)
+    }
+
+    internal static func applyWiredMemoryPolicy(
+        _ policy: Qwen3TTSWiredMemoryPolicy,
+        pinMemory: (Double) -> Void = { fraction in
+            MetalBudget.pinMemory(fraction: fraction)
+        }
+    ) throws {
+        try validateWiredMemoryPolicy(policy)
+        if case .pin(let fraction) = policy {
+            pinMemory(fraction)
+        }
+    }
+
+    private static func validateWiredMemoryPolicy(
+        _ policy: Qwen3TTSWiredMemoryPolicy
+    ) throws {
+        guard case .pin(let fraction) = policy else { return }
+        guard fraction.isFinite, fraction > 0, fraction <= 1 else {
+            throw Qwen3TTSLoadingError.invalidWiredMemoryFraction(fraction)
+        }
+    }
+
+    private static func validateDirectory(_ directory: URL) throws {
+        guard directory.isFileURL else {
+            throw Qwen3TTSLoadingError.nonFileURL(directory)
+        }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(
+            atPath: directory.path, isDirectory: &isDirectory)
+        else {
+            throw Qwen3TTSLoadingError.directoryNotFound(directory)
+        }
+        guard isDirectory.boolValue else {
+            throw Qwen3TTSLoadingError.pathIsNotDirectory(directory)
+        }
+    }
+
+    private static func validateRegularFile(_ file: URL) throws {
+        let values = try? file.resourceValues(forKeys: [.isRegularFileKey])
+        guard values?.isRegularFile == true else {
+            throw Qwen3TTSLoadingError.requiredFileUnavailable(file)
+        }
+    }
+
+    private static func validateWeights(in directory: URL) throws {
+        let contents: [URL]
+        do {
+            contents = try FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey])
+        } catch {
+            throw Qwen3TTSLoadingError.weightsUnavailable(directory)
+        }
+        let hasRegularSafetensors = contents.contains { file in
+            guard file.pathExtension == "safetensors" else { return false }
+            return (try? file.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+        guard hasRegularSafetensors, HuggingFaceDownloader.weightsExist(in: directory) else {
+            throw Qwen3TTSLoadingError.weightsUnavailable(directory)
+        }
     }
 
     /// Parse speaker configuration from model config.json

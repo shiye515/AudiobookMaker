@@ -1,102 +1,102 @@
-<p align="center">
-  <img src="docs/app-icon-transparent.png" width="128" alt="AudiobookMaker 图标">
-</p>
+# abm / AudiobookMaker
 
-<h1 align="center">AudiobookMaker</h1>
+**Audiobook Maker** — 把 EPUB / 文本变成本地有声书的 macOS 应用。
 
-<p align="center">
-  把 EPUB 变成带章节、封面和完整元数据的 M4B 有声书，全程在 Mac 本地完成。
-  <br>
-  Turn EPUB books into chaptered, metadata-rich M4B audiobooks entirely on your Mac.
-</p>
+导入电子书 → 按目录**节级**拆章节 → 用 **CosyVoice3** 在本机批量合成 → 导出带章节的 **M4B**。
 
-<p align="center">
-  <a href="https://github.com/shiye515/AudiobookMaker/releases/latest"><img src="https://img.shields.io/github/v/release/shiye515/AudiobookMaker?style=flat-square" alt="最新版本"></a>
-  <img src="https://img.shields.io/badge/macOS-26%2B-111111?style=flat-square&logo=apple" alt="macOS 26+">
-  <img src="https://img.shields.io/badge/Apple%20Silicon-arm64-111111?style=flat-square&logo=apple" alt="Apple Silicon arm64">
-  <img src="https://img.shields.io/badge/Swift-6-F05138?style=flat-square&logo=swift&logoColor=white" alt="Swift 6">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-2ea44f?style=flat-square" alt="MIT License"></a>
-</p>
+[![CI](https://github.com/shiye515/AudiobookMaker/actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-blue)](#系统要求)
+[![Chip](https://img.shields.io/badge/CPU-Apple%20Silicon-lightgrey)](#系统要求)
 
-<p align="center"><strong>离线语音合成 · 单文件 M4B · Apple Silicon 专用</strong></p>
+> SwiftUI · 本地推理 · 不上传你的书
 
-![AudiobookMaker 界面预览](docs/design-reference.svg)
+---
 
-## 为什么选择 AudiobookMaker
+## 为什么选 abm
 
-- **真正的 M4B 有声书**：导出一个可直接加入 Apple Books 等播放器的 `.m4b` 文件，而不是音频文件压缩包。
-- **章节导航、封面与元数据**：把 EPUB 章节写入音频时间线，并保留标题、作者、封面和出版信息。
-- **三种本机语音路径**：无需下载的 Apple 系统语音，以及按需下载的 CosyVoice3 与 Qwen3-TTS。
-- **Apple Silicon 优化**：本地 AI 模型通过 speech-swift、MLX Swift 与 Metal 运行，并复用模型 session、限制安全并发。
-- **可暂停、可恢复**：显示章节转换进度，长篇书籍可暂停后继续处理。
-- **隐私优先**：书籍解析、语音合成和 M4B 封装都在本机完成，书籍内容不会上传。
+| | |
+|---|---|
+| **真正可用的章节** | 按 EPUB 目录最小节切分，支持同文件锚点；脏目录（Calibre 错位 NCX）会以正文为准纠正标题 |
+| **全程本地** | CosyVoice3 + MLX 在 Apple Silicon 上推理，正文与音频不出机器 |
+| **像做书，不像跑脚本** | 书库、章节队列、断点续传、试听播放条、一键导出 |
+| **导出能进 Books** | M4B：AAC + 章节标记 + 封面 + 元数据 |
 
-## 下载与使用
+## 功能一览
 
-1. 前往 [Releases](https://github.com/shiye515/AudiobookMaker/releases/latest) 下载 Apple Silicon 版本。
-2. 解压后把 `AudiobookMaker.app` 拖入“应用程序”。
-3. 启动应用，导入 EPUB，选择语音模型和音色并开始转换。
-4. 转换完成后导出单个 M4B 文件。
+- **EPUB 导入**：封面 / 作者 / 字数；节级章节与「卷 · 章 · 节」层级标题  
+- **批量合成**：全书入队、暂停/继续、分段断点崩溃可续  
+- **音色**：内置参考样本 + 零样本克隆；可按书设置默认音色  
+- **导出**：整书 M4B、分章 M4A、WAV；进度可取消  
+- **快速单文本**：不建书也能合成一段话  
 
-### 系统要求
+## 系统要求
 
-- Apple Silicon Mac（原生 arm64；不支持 Intel Mac 或 Rosetta）
-- macOS 26.0 或更高版本
-- CosyVoice3/Qwen3-TTS 需要 Metal；Apple 系统语音无需模型下载
-- 模型权重不包含在仓库或 App bundle 中。CosyVoice3 约 1.12 GB，Qwen3-TTS（含 tokenizer）约 2.50 GB，安装还需要 staging 与安全余量
+- Apple Silicon Mac（M1 及以后）  
+- macOS 15+（以 Xcode 工程部署目标为准）  
+- 建议 16GB+ 内存；首次下载模型约 2GB+  
 
-升级时，旧版已移除模型的默认设置会回退到 Apple 系统语音。绑定已移除模型的未完成任务会明确要求重新开始；应用不会把旧 checkpoint 静默交给另一种语音继续生成。
-
-## 工作流程
-
-```text
-EPUB → 安全解析章节 → 本地语音合成 → 合并音频 → 写入章节/封面/元数据 → M4B
-```
-
-CosyVoice3 与 Qwen3-TTS 只在用户明确点击下载后联网。安装器校验固定清单、文件大小和 SHA-256，并把模型原子安装到 App 管理的 Application Support 目录。安装完成后，试听与转换均可断网执行。
-
-## 从源码构建
-
-需要 Apple Silicon Mac、完整 Xcode 26 或兼容版本，以及 Metal Toolchain：
+## 快速开始
 
 ```bash
 git clone https://github.com/shiye515/AudiobookMaker.git
-cd AudiobookMaker
-xcodebuild -downloadComponent MetalToolchain
-open AudiobookMaker.xcodeproj
+cd abm
+open abm.xcodeproj
 ```
 
-无签名 Debug 构建：
+1. 等待 Swift Package 解析完成  
+2. `⌘R` 运行  
+3. 应用内点「初始化模型」，按提示下载权重（仅一次）  
+4. 拖入 EPUB 或点「+ 导入」→「一键生成全书」→ 导出 M4B  
+
+更细的步骤见 [docs/FAQ.md](docs/FAQ.md)。
+
+**从源码构建（命令行）**
 
 ```bash
-xcodebuild build \
-  -project AudiobookMaker.xcodeproj \
-  -scheme AudiobookMaker \
-  -configuration Debug \
-  -destination 'platform=macOS,arch=arm64' \
-  ARCHS=arm64 \
-  CODE_SIGNING_ALLOWED=NO
+xcodebuild -project abm.xcodeproj -scheme abm -configuration Debug \
+  -destination 'platform=macOS' build
 ```
 
-arm64 Release archive 与产物门禁：
+M4B 导出需要先构建内置 ffmpeg（仓库不提交二进制）：
 
 ```bash
-Tools/archive-apple-silicon.sh
-Tools/verify-release-artifacts.sh build/AudiobookMaker-AppleSilicon.xcarchive
+scripts/build-ffmpeg.sh
 ```
 
-发布门禁会递归检查所有 Mach-O 代码仅含 arm64，检查链接依赖，并拒绝已移除运行时路径或模型权重。开发、运行时分发、性能基准和验收说明见 [`docs/`](docs/)。
+## 参与开发
 
-## 隐私与第三方组件
+欢迎 PR、Issue、文档与夹具贡献——从这些入口最容易上手：
 
-AudiobookMaker 不收集书籍内容或使用数据。仅当用户主动下载 CosyVoice3 或 Qwen3-TTS 时才需要网络连接，详情见[隐私说明](docs/privacy.md)。
+1. 报一本「章节拆错」的 EPUB（可匿名化）并贴上  
+   `abm --verify-epub-split book.epub` 输出  
+2. 补 `docs/screenshots/` 演示图  
+3. 改进 FAQ / 界面文案  
+4. 在 `openspec/` 里提行为变更提案  
 
-应用保留 speech-swift、MLX Swift、Swift Transformers 和外部模型的原始许可证信息，详见[第三方软件声明](docs/third-party-notices.md)与 [SBOM](docs/sbom.json)。
+- 贡献指南：[CONTRIBUTING.md](CONTRIBUTING.md)  
+- 行为准则：[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)  
+- 安全披露：[SECURITY.md](SECURITY.md)  
+- 路线与历史决策：`docs/HANDOFF.md`、`openspec/`  
 
-## 参与贡献
+有想法但不想开 Issue？也欢迎直接开 Draft PR。
 
-欢迎提交 Issue、功能建议和 Pull Request。报告问题时，请附上 macOS 版本、Mac 芯片型号、可复现步骤和已脱敏日志；请勿上传受版权保护的书籍或模型文件。
+## 仓库结构
 
-## License
+```
+abm/                  应用（SwiftUI / Core / Services）
+abm.xcodeproj/        Xcode 工程
+Vendor/speech-swift/  本地 TTS 框架（含 Archive 用 float32 补丁）
+scripts/              ffmpeg 构建、Archive、EPUB 解析校验
+openspec/             规格与变更提案
+docs/                 FAQ、发布、截图、技术文档
+```
 
-AudiobookMaker 的原创代码以 [MIT License](LICENSE) 开源。第三方组件及模型仍遵循各自的许可证。
+## 许可与第三方
+
+应用代码 [MIT](LICENSE)。依赖与**模型权重**许可见 [NOTICE](NOTICE)。  
+使用克隆音色时，请确保你有权使用对应参考音频。
+
+## 免责声明
+
+软件按“原样”提供。请遵守当地法律与版权，仅合成你有权使用的文本与声音。

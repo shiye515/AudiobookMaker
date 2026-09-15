@@ -22,17 +22,14 @@ import Foundation
 public enum CoreMLComputeUnitsResolver {
     public static let envKey = "SPEECH_COREML_COMPUTE_UNITS"
 
-    /// Returns the env-overridden compute units, or `fallback` when unset/unrecognized.
-    /// Accepted env values (case-insensitive): `ane`/`cpuAndNeuralEngine`,
-    /// `gpu`/`cpuAndGPU`, `cpu`/`cpuOnly`, `all`.
-    public static func resolved(default fallback: MLComputeUnits) -> MLComputeUnits {
-        guard let raw = ProcessInfo.processInfo.environment[envKey]?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased(), !raw.isEmpty
-        else {
-            return fallback
-        }
-        switch raw {
+    /// Parse a user-facing compute-units name (case-insensitive, surrounding
+    /// whitespace ignored). This is the single vocabulary shared by the env
+    /// override and CLI flags:
+    /// `ane`/`cpuAndNeuralEngine`/`neuralEngine`, `gpu`/`cpuAndGPU`,
+    /// `cpu`/`cpuOnly`, `all`. Returns nil for anything else, including an
+    /// empty string.
+    public static func parse(_ raw: String) -> MLComputeUnits? {
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "ane", "cpuandneuralengine", "neuralengine":
             return .cpuAndNeuralEngine
         case "gpu", "cpuandgpu":
@@ -42,8 +39,29 @@ public enum CoreMLComputeUnitsResolver {
         case "all":
             return .all
         default:
+            return nil
+        }
+    }
+
+    /// Short canonical name for `units` (`ane`, `gpu`, `cpu`, `all`) — the
+    /// inverse of ``parse(_:)``, for user-facing status lines.
+    public static func shortName(_ units: MLComputeUnits) -> String {
+        switch units {
+        case .cpuAndNeuralEngine: return "ane"
+        case .cpuAndGPU: return "gpu"
+        case .cpuOnly: return "cpu"
+        case .all: return "all"
+        @unknown default: return "unknown(\(units.rawValue))"
+        }
+    }
+
+    /// Returns the env-overridden compute units, or `fallback` when unset/unrecognized.
+    /// Accepted env values are those of ``parse(_:)``.
+    public static func resolved(default fallback: MLComputeUnits) -> MLComputeUnits {
+        guard let raw = ProcessInfo.processInfo.environment[envKey] else {
             return fallback
         }
+        return parse(raw) ?? fallback
     }
 }
 #endif

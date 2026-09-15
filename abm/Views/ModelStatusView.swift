@@ -5,6 +5,7 @@
 //  模型与引擎中心：现代化引擎主控仪表卡 + 本地模型资产管理 + 架构技术指标 + 快速目录导航。
 //
 
+import AppKit
 import SwiftUI
 
 struct ModelStatusView: View {
@@ -511,8 +512,57 @@ struct ModelStatusView: View {
                     title: "实测 RTF ≈ 0.9",
                     subtitle: "生成 1 秒音频耗时小于 1 秒 · 高效批量产出"
                 )
+                starCard
             }
         }
+    }
+
+    /// 求 Star 卡片：点击跳转 GitHub 仓库
+    private var starCard: some View {
+        Button {
+            if let url = URL(string: "https://github.com/shiye515/AudiobookMaker") {
+                NSWorkspace.shared.open(url)
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "star.fill")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.yellow)
+                    .frame(width: 28, height: 28)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.yellow.opacity(0.14))
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 4) {
+                        Text("求 Star 支持")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary)
+                        Image(systemName: "arrow.up.right")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                    }
+                    Text("GitHub · shiye515/AudiobookMaker\n喜欢就点个 Star，助力持续迭代")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(Color.yellow.opacity(0.28), lineWidth: 1)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("在浏览器中打开 GitHub 仓库")
     }
 
     private func specCard(icon: String, iconColor: Color, title: String, subtitle: String) -> some View {

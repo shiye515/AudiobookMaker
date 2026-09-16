@@ -509,8 +509,8 @@ struct ModelStatusView: View {
                 specCard(
                     icon: "gauge.with.needle.fill",
                     iconColor: .green,
-                    title: "实测 RTF ≈ 0.9",
-                    subtitle: "生成 1 秒音频耗时小于 1 秒 · 高效批量产出"
+                    title: "实测 RTF ≈ 0.45",
+                    subtitle: "生成 1 秒音频仅需约 0.45 秒 · 高效批量产出"
                 )
                 starCard
             }

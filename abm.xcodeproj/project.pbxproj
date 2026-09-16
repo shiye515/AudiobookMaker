@@ -295,7 +295,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 5Q85C9M9LA;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -306,6 +306,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = abm/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = AudiobookMaker;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -332,7 +333,7 @@
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 3;
 				DEVELOPMENT_TEAM = 5Q85C9M9LA;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -343,6 +344,7 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = abm/Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = AudiobookMaker;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.books";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
